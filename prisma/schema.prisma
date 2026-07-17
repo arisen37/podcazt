@@ -1,0 +1,100 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoomKind {
+  PODCAST
+  SELF_RECORD
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
+model User {
+  id        String   @id @default(uuid()) @db.Uuid
+  email     String   @unique
+  password  String
+  username  String   @unique
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  videos       Video[]  @relation("UserVideos")
+  ownedRooms   Room[]   @relation("RoomOwner")
+  sentInvites  Invite[] @relation("SentInvites")
+  recvInvites  Invite[] @relation("ReceivedInvites")
+  roomMembers  Room[]   @relation("RoomMembers")
+
+  @@map("users")
+}
+
+model Video {
+  id        String   @id @default(uuid()) @db.Uuid
+  ownerId   String   @map("owner_id") @db.Uuid
+  name      String
+  link      String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  owner  User    @relation("UserVideos", fields: [ownerId], references: [id], onDelete: Cascade)
+  frames Frame[]
+  rooms  Room[]
+
+  @@index([ownerId])
+  @@map("videos")
+}
+
+model Frame {
+  id        String   @id @default(uuid()) @db.Uuid
+  videoId   String   @map("video_id") @db.Uuid
+  link      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  video Video @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@index([videoId])
+  @@map("frames")
+}
+
+model Room {
+  id          String    @id @default(uuid()) @db.Uuid
+  roomOwnerId String    @map("room_owner_id") @db.Uuid
+  videoId     String    @map("video_id") @db.Uuid
+  name        String
+  kind        RoomKind
+  createdAt   DateTime  @default(now()) @map("created_at")
+  closedAt    DateTime? @map("closed_at")
+
+  owner   User     @relation("RoomOwner", fields: [roomOwnerId], references: [id], onDelete: Cascade)
+  video   Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  invites Invite[]
+  members User[]   @relation("RoomMembers")
+
+  @@index([roomOwnerId])
+  @@index([videoId])
+  @@map("rooms")
+}
+
+model Invite {
+  id           String       @id @default(uuid()) @db.Uuid
+  inviterId    String       @map("inviter_id") @db.Uuid
+  invitedId    String?      @map("invited_id") @db.Uuid
+  invitedEmail String       @map("invited_email")
+  roomId       String       @map("room_id") @db.Uuid
+  status       InviteStatus @default(PENDING)
+  createdAt    DateTime     @default(now()) @map("created_at")
+
+  inviter User  @relation("SentInvites", fields: [inviterId], references: [id], onDelete: Cascade)
+  invited User? @relation("ReceivedInvites", fields: [invitedId], references: [id], onDelete: SetNull)
+  room    Room  @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@index([invitedEmail])
+  @@index([roomId])
+  @@map("invites")
+}
