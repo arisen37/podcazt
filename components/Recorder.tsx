@@ -63,6 +63,11 @@ function normalizeTurnUrl(configuredUrl?: string) {
   return /^(?:turn|turns):[^\s]+$/i.test(url) ? url : null;
 }
 
+function turnTransportUrls(turnUrl: string) {
+  if (/\?transport=/i.test(turnUrl) || /^turns:/i.test(turnUrl)) return [turnUrl];
+  return [`${turnUrl}?transport=udp`, `${turnUrl}?transport=tcp`];
+}
+
 async function sha256(blob: Blob) {
   const bytes = await blob.arrayBuffer();
   const hash = await crypto.subtle.digest("SHA-256", bytes);
@@ -165,7 +170,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
     ];
     if (turnUrl) {
       iceServers.push({
-        urls: turnUrl,
+        urls: turnTransportUrls(turnUrl),
         username: process.env.NEXT_PUBLIC_TURN_USERNAME,
         credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL
       });
@@ -174,9 +179,25 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
       setError("The configured TURN relay URL is invalid. Check NEXT_PUBLIC_TURN_URL.");
     }
     const peer = new RTCPeerConnection({ iceServers });
+    let relayCandidateFound = false;
     streamRef.current?.getTracks().forEach((track) => peer.addTrack(track, streamRef.current as MediaStream));
     peer.onicecandidate = (event) => {
-      if (event.candidate) sendSignal({ type: "ice-candidate", targetPeerId: peerId, payload: event.candidate });
+      if (event.candidate) {
+        if (event.candidate.type === "relay" || event.candidate.candidate.includes(" typ relay ")) {
+          relayCandidateFound = true;
+        }
+        sendSignal({ type: "ice-candidate", targetPeerId: peerId, payload: event.candidate });
+        return;
+      }
+
+      if (turnUrl && !relayCandidateFound && peer.connectionState !== "connected") {
+        setError("The TURN server returned no relay candidate. Verify its username and credential in Vercel.");
+      }
+    };
+    peer.onicecandidateerror = (event) => {
+      if (event.url.startsWith("turn:") || event.url.startsWith("turns:")) {
+        setError(`TURN allocation failed (${event.errorCode}): ${event.errorText || "check the relay credentials"}`);
+      }
     };
     peer.ontrack = (event) => {
       const stream = event.streams[0] ?? remoteStreamsRef.current.get(peerId) ?? new MediaStream();

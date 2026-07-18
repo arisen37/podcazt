@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getRealtimeToken, getSignalingUrl } from "@/lib/realtime-client";
 
 export type NotificationInvite = {
@@ -13,6 +13,7 @@ export type NotificationInvite = {
 };
 
 export function NotificationBell({ initialInvites }: { initialInvites: NotificationInvite[] }) {
+  const centerRef = useRef<HTMLDivElement>(null);
   const [invites, setInvites] = useState(initialInvites);
   const [open, setOpen] = useState(false);
 
@@ -48,12 +49,28 @@ export function NotificationBell({ initialInvites }: { initialInvites: Notificat
     };
   }, []);
 
+  useEffect(() => {
+    if (!open) return;
+
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!centerRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
   return (
     <div
+      ref={centerRef}
       className="notificationCenter"
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
-      onFocus={() => setOpen(true)}
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
       }}
@@ -63,6 +80,7 @@ export function NotificationBell({ initialInvites }: { initialInvites: Notificat
         type="button"
         aria-label={`${invites.length} pending invitations`}
         aria-expanded={open}
+        aria-controls="notification-popover"
         onClick={() => setOpen((value) => !value)}
       >
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -72,7 +90,7 @@ export function NotificationBell({ initialInvites }: { initialInvites: Notificat
       </button>
 
       {open && (
-        <section className="notificationPopover" aria-label="Active notifications">
+        <section id="notification-popover" className="notificationPopover" aria-label="Active notifications">
           <div className="notificationHeader">
             <strong>Notifications</strong>
             <span>{invites.length} active</span>
