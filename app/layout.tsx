@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Analytics } from "@vercel/analytics/next";
 import { NotificationBell, type NotificationInvite } from "@/components/NotificationBell";
 import { ProfileMenu } from "@/components/ProfileMenu";
 import { getCurrentUser } from "@/lib/auth";
@@ -62,6 +63,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
           </div>
         </div>
         {children}
+        <Analytics />
       </body>
     </html>
   );
