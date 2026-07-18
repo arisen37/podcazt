@@ -46,7 +46,8 @@ export async function POST(request: NextRequest) {
     to: parsed.data.emailId,
     inviterName: user.name || user.username,
     roomName: room.name,
-    inviteId: invite.id
+    inviteId: invite.id,
+    requestOrigin: request.nextUrl.origin
   });
 
   return ok({ invite, email: emailResult });

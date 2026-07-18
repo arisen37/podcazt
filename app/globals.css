@@ -20,6 +20,10 @@ body {
   min-height: 100%;
 }
 
+html {
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   color: var(--text);
@@ -36,6 +40,16 @@ button,
 input,
 select {
   font: inherit;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+img,
+video {
+  max-width: 100%;
 }
 
 .shell {
@@ -413,6 +427,7 @@ select {
 
 .sidePanel {
   padding: 18px;
+  min-width: 0;
 }
 
 .list {
@@ -421,11 +436,17 @@ select {
 }
 
 @media (max-width: 860px) {
-  .hero,
   .signinHero,
   .dashboardGrid,
   .studio {
     grid-template-columns: 1fr;
+  }
+
+  .hero {
+    flex-direction: column;
+    min-height: auto;
+    gap: 28px;
+    padding: 56px 0;
   }
 
   .signinHero {
@@ -436,5 +457,124 @@ select {
   .topbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .stage {
+    min-height: 0;
+  }
+
+  .preview {
+    min-height: 0;
+    aspect-ratio: 16 / 9;
+  }
+}
+
+@media (max-width: 560px) {
+  .shell {
+    width: min(100% - 24px, 1200px);
+  }
+
+  .nav {
+    padding: 16px 0;
+  }
+
+  .brand {
+    font-size: 26px;
+  }
+
+  .nav > .btnRow {
+    min-width: 0;
+  }
+
+  .nav .btn {
+    padding: 11px 17px;
+  }
+
+  .hero h1,
+  .pageTitle,
+  .signinCopy h1 {
+    font-size: clamp(40px, 13vw, 58px);
+    letter-spacing: -0.065em;
+    overflow-wrap: anywhere;
+  }
+
+  .hero {
+    text-align: left;
+    align-items: stretch;
+    padding: 40px 0;
+  }
+
+  .homeHero {
+    text-align: center;
+  }
+
+  .homeEyebrow {
+    font-size: 19px;
+    margin-top: 18px;
+  }
+
+  .homeMeta {
+    display: grid;
+    gap: 8px;
+    font-size: 15px;
+  }
+
+  .homeMeta span + span::before {
+    content: none;
+  }
+
+  .deviceGlow {
+    margin-top: 56px;
+  }
+
+  .page {
+    padding: 24px 0 48px;
+  }
+
+  .formCard,
+  .tile,
+  .sidePanel {
+    padding: 20px;
+    border-radius: 22px;
+  }
+
+  .tileGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .videoCard {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .videoCard .btn,
+  .topbar > .btn,
+  .formGrid > .btn {
+    width: 100%;
+    text-align: center;
+  }
+
+  .controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 12px;
+  }
+
+  .controls .btn {
+    padding: 12px 8px;
+  }
+
+  .controls .pill,
+  .controls .alert {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }

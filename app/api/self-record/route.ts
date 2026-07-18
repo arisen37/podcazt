@@ -14,10 +14,14 @@ export async function POST(request: NextRequest) {
   const parsed = CreateRoomSchema.safeParse(await request.json().catch(() => ({})));
   if (!parsed.success) return fail("Invalid room payload", 422, parsed.error.flatten());
 
-  const result = await createRoomForUser({
-    user,
-    name: parsed.data.RoomName,
-    kind: "self-record"
-  });
-  return ok(result);
+  try {
+    const result = await createRoomForUser({
+      user,
+      name: parsed.data.RoomName,
+      kind: "self-record"
+    });
+    return ok(result);
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : "Failed to create room", 500);
+  }
 }

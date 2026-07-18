@@ -74,7 +74,11 @@ export function Recorder({ roomId }: RecorderProps) {
     setUploadState("");
     uploadPromiseRef.current = null;
     chunksRef.current = [];
-    const recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
+    const preferredType = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
+      .find((type) => MediaRecorder.isTypeSupported(type));
+    const recorder = preferredType
+      ? new MediaRecorder(stream, { mimeType: preferredType })
+      : new MediaRecorder(stream);
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) chunksRef.current.push(event.data);
     };

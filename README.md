@@ -5,10 +5,14 @@ Next.js + TypeScript recording app with Prisma/PostgreSQL, optional Supabase Sto
 ## Setup
 
 1. Copy `.env.example` to `.env`.
-2. Set `DATABASE_URL` to your PostgreSQL URL. A Supabase Postgres connection string works.
-3. Optional: configure Supabase Storage variables for final video upload.
-4. Optional: configure SMTP variables for email invite delivery.
-5. Install dependencies and initialize Prisma:
+2. Set `NEXT_PUBLIC_APP_URL` to the public HTTPS origin of the deployed app. This
+   is used for invite links; localhost values are rejected in production.
+3. Set `DATABASE_URL` to your PostgreSQL URL. For a serverless deployment using Supabase,
+   use the transaction pooler URL (port `6543`) with
+   `?pgbouncer=true&connection_limit=1` so Prisma does not use prepared statements.
+4. Optional: configure Supabase Storage variables for final video upload.
+5. Optional: configure Gmail variables for email invite delivery.
+6. Install dependencies and initialize Prisma:
 
 ```bash
 npm install
