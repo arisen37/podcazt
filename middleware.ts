@@ -44,6 +44,10 @@ async function hasValidSession(request: NextRequest) {
 }
 
 export async function middleware(request: NextRequest) {
+  if (request.nextUrl.pathname === "/signin" && (await hasValidSession(request))) {
+    return NextResponse.redirect(new URL("/dashboard", request.url));
+  }
+
   if (PUBLIC_PAGES.has(request.nextUrl.pathname)) return NextResponse.next();
   if (await hasValidSession(request)) return NextResponse.next();
 

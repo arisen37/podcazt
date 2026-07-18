@@ -101,6 +101,8 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
   const candidatesRef = useRef(new Map<string, RTCIceCandidateInit[]>());
   const remoteStreamsRef = useRef(new Map<string, MediaStream>());
   const videoElementsRef = useRef(new Map<string, HTMLVideoElement>());
+  const mediaFailureTimersRef = useRef(new Map<string, number>());
+  const turnDiagnosticsRef = useRef(new Map<string, string>());
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recorderStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -126,6 +128,8 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
   const [localChunksReady, setLocalChunksReady] = useState(false);
   const [uploadState, setUploadState] = useState("");
   const [error, setError] = useState("");
+  const [mediaIssues, setMediaIssues] = useState<Record<string, string>>({});
+  const [connectingPeerIds, setConnectingPeerIds] = useState<string[]>([]);
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [mediaStats, setMediaStats] = useState<MediaStats>({
     encoded: 0,
@@ -150,12 +154,23 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
   }, [roomId]);
 
   const removePeer = useCallback((peerId: string) => {
+    const failureTimer = mediaFailureTimersRef.current.get(peerId);
+    if (failureTimer) window.clearTimeout(failureTimer);
+    mediaFailureTimersRef.current.delete(peerId);
+    turnDiagnosticsRef.current.delete(peerId);
     peersRef.current.get(peerId)?.close();
     peersRef.current.delete(peerId);
     candidatesRef.current.delete(peerId);
     remoteStreamsRef.current.delete(peerId);
     videoElementsRef.current.delete(peerId);
     setParticipants((current) => current.filter((participant) => participant.peerId !== peerId));
+    setConnectingPeerIds((current) => current.filter((id) => id !== peerId));
+    setMediaIssues((current) => {
+      if (!(peerId in current)) return current;
+      const next = { ...current };
+      delete next[peerId];
+      return next;
+    });
   }, []);
 
   const createPeer = useCallback((peerId: string, user?: { name: string; username: string }) => {
@@ -176,10 +191,14 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
       });
     }
     if (configuredTurnUrl && !turnUrl) {
-      setError("The configured TURN relay URL is invalid. Check NEXT_PUBLIC_TURN_URL.");
+      setMediaIssues((current) => ({
+        ...current,
+        [peerId]: "The configured TURN relay URL is invalid. Check NEXT_PUBLIC_TURN_URL."
+      }));
     }
-    const peer = new RTCPeerConnection({ iceServers });
+    const peer = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 4 });
     let relayCandidateFound = false;
+    setConnectingPeerIds((current) => current.includes(peerId) ? current : [...current, peerId]);
     streamRef.current?.getTracks().forEach((track) => peer.addTrack(track, streamRef.current as MediaStream));
     peer.onicecandidate = (event) => {
       if (event.candidate) {
@@ -191,12 +210,18 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
       }
 
       if (turnUrl && !relayCandidateFound && peer.connectionState !== "connected") {
-        setError("The TURN server returned no relay candidate. Verify its username and credential in Vercel.");
+        turnDiagnosticsRef.current.set(
+          peerId,
+          "The TURN server returned no relay candidate. Verify its username and credential in Vercel."
+        );
       }
     };
     peer.onicecandidateerror = (event) => {
       if (event.url.startsWith("turn:") || event.url.startsWith("turns:")) {
-        setError(`TURN allocation failed (${event.errorCode}): ${event.errorText || "check the relay credentials"}`);
+        turnDiagnosticsRef.current.set(
+          peerId,
+          `TURN allocation failed (${event.errorCode}): ${event.errorText || "check the relay credentials"}`
+        );
       }
     };
     peer.ontrack = (event) => {
@@ -210,8 +235,32 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
       ));
     };
     peer.onconnectionstatechange = () => {
-      if (peer.connectionState === "failed") {
-        setError("Could not establish a media path to a participant. Check the TURN relay configuration.");
+      if (peer.connectionState === "connected") {
+        const failureTimer = mediaFailureTimersRef.current.get(peerId);
+        if (failureTimer) window.clearTimeout(failureTimer);
+        mediaFailureTimersRef.current.delete(peerId);
+        turnDiagnosticsRef.current.delete(peerId);
+        setConnectingPeerIds((current) => current.filter((id) => id !== peerId));
+        setMediaIssues((current) => {
+          if (!(peerId in current)) return current;
+          const next = { ...current };
+          delete next[peerId];
+          return next;
+        });
+      }
+      if (["failed", "disconnected"].includes(peer.connectionState) && !mediaFailureTimersRef.current.has(peerId)) {
+        setConnectingPeerIds((current) => current.includes(peerId) ? current : [...current, peerId]);
+        const timer = window.setTimeout(() => {
+          mediaFailureTimersRef.current.delete(peerId);
+          if (!["failed", "disconnected"].includes(peer.connectionState)) return;
+          setConnectingPeerIds((current) => current.filter((id) => id !== peerId));
+          setMediaIssues((current) => ({
+            ...current,
+            [peerId]: turnDiagnosticsRef.current.get(peerId)
+              ?? "Could not establish a media path to a participant. Check the TURN relay configuration."
+          }));
+        }, 15_000);
+        mediaFailureTimersRef.current.set(peerId, timer);
       }
       if (peer.connectionState === "closed") removePeer(peerId);
     };
@@ -228,6 +277,8 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
     let socket: WebSocket | null = null;
     const peerConnections = peersRef.current;
     const remoteStreams = remoteStreamsRef.current;
+    const mediaFailureTimers = mediaFailureTimersRef.current;
+    const turnDiagnostics = turnDiagnosticsRef.current;
 
     async function connect() {
       try {
@@ -317,6 +368,9 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
     return () => {
       active = false;
       socket?.close(1000, "Page closed");
+      mediaFailureTimers.forEach((timer) => window.clearTimeout(timer));
+      mediaFailureTimers.clear();
+      turnDiagnostics.clear();
       peerConnections.forEach((peer) => peer.close());
       peerConnections.clear();
       remoteStreams.clear();
@@ -675,6 +729,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
           {ending ? "Leaving…" : isOwner ? "End room" : "Leave room"}
         </button>
         <span className={`pill connectionPill ${connectionState === "Live" ? "live" : ""}`}>{connectionState}</span>
+        {connectingPeerIds.length > 0 && <span className="pill">Connecting media…</span>}
         {participants.length > 0 && (
           <span className="pill mediaStats" title="WebRTC video frame transport counters">
             Frames ↑ {mediaStats.sent}/{mediaStats.encoded} · ↓ {mediaStats.received}/{mediaStats.decoded}
@@ -685,6 +740,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
         )}
         {uploadState && <span className="pill">{uploadState}</span>}
         {error && <div className="alert">{error}</div>}
+        {Object.values(mediaIssues)[0] && <div className="alert">{Object.values(mediaIssues)[0]}</div>}
       </div>
     </section>
   );
