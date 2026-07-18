@@ -27,7 +27,10 @@ type RecorderProps = {
   roomId: string;
   isOwner: boolean;
   currentUser: { name: string; username: string };
+  onParticipantsChange?: (participants: LiveParticipant[]) => void;
 };
+
+export type LiveParticipant = Pick<Participant, "peerId" | "name" | "username">;
 
 type MediaStats = {
   encoded: number;
@@ -48,6 +51,17 @@ type VideoRtpStats = RTCStats & Partial<MediaStats> & {
   framesDropped?: number;
   packetsLost?: number;
 };
+
+function normalizeTurnUrl(configuredUrl?: string) {
+  const value = configuredUrl?.trim();
+  if (!value) return null;
+
+  const url = /^(?:turn|turns):/i.test(value)
+    ? value
+    : `turn:${value.replace(/^\/\//, "")}`;
+
+  return /^(?:turn|turns):[^\s]+$/i.test(url) ? url : null;
+}
 
 async function sha256(blob: Blob) {
   const bytes = await blob.arrayBuffer();
@@ -74,12 +88,13 @@ function VideoTile({ participant, muted, attach }: {
   );
 }
 
-export function Recorder({ roomId, isOwner, currentUser }: RecorderProps) {
+export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }: RecorderProps) {
   const router = useRouter();
   const streamRef = useRef<MediaStream | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const peersRef = useRef(new Map<string, RTCPeerConnection>());
   const candidatesRef = useRef(new Map<string, RTCIceCandidateInit[]>());
+  const remoteStreamsRef = useRef(new Map<string, MediaStream>());
   const videoElementsRef = useRef(new Map<string, HTMLVideoElement>());
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recorderStreamRef = useRef<MediaStream | null>(null);
@@ -106,6 +121,7 @@ export function Recorder({ roomId, isOwner, currentUser }: RecorderProps) {
   const [localChunksReady, setLocalChunksReady] = useState(false);
   const [uploadState, setUploadState] = useState("");
   const [error, setError] = useState("");
+  const [audioBlocked, setAudioBlocked] = useState(false);
   const [mediaStats, setMediaStats] = useState<MediaStats>({
     encoded: 0,
     sent: 0,
@@ -114,6 +130,14 @@ export function Recorder({ roomId, isOwner, currentUser }: RecorderProps) {
     dropped: 0,
     packetsLost: 0
   });
+
+  useEffect(() => {
+    onParticipantsChange?.([localParticipant, ...participants].map(({ peerId, name, username }) => ({
+      peerId,
+      name,
+      username
+    })));
+  }, [localParticipant, onParticipantsChange, participants]);
 
   const sendSignal = useCallback((message: object) => {
     const socket = socketRef.current;
@@ -124,6 +148,7 @@ export function Recorder({ roomId, isOwner, currentUser }: RecorderProps) {
     peersRef.current.get(peerId)?.close();
     peersRef.current.delete(peerId);
     candidatesRef.current.delete(peerId);
+    remoteStreamsRef.current.delete(peerId);
     videoElementsRef.current.delete(peerId);
     setParticipants((current) => current.filter((participant) => participant.peerId !== peerId));
   }, []);
@@ -132,10 +157,11 @@ export function Recorder({ roomId, isOwner, currentUser }: RecorderProps) {
     const existing = peersRef.current.get(peerId);
     if (existing) return existing;
 
-    const turnUrl = process.env.NEXT_PUBLIC_TURN_URL;
+    const configuredTurnUrl = process.env.NEXT_PUBLIC_TURN_URL;
+    const turnUrl = normalizeTurnUrl(configuredTurnUrl);
     const iceServers: RTCIceServer[] = [
-        { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" }
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" }
     ];
     if (turnUrl) {
       iceServers.push({
@@ -144,19 +170,29 @@ export function Recorder({ roomId, isOwner, currentUser }: RecorderProps) {
         credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL
       });
     }
+    if (configuredTurnUrl && !turnUrl) {
+      setError("The configured TURN relay URL is invalid. Check NEXT_PUBLIC_TURN_URL.");
+    }
     const peer = new RTCPeerConnection({ iceServers });
     streamRef.current?.getTracks().forEach((track) => peer.addTrack(track, streamRef.current as MediaStream));
     peer.onicecandidate = (event) => {
       if (event.candidate) sendSignal({ type: "ice-candidate", targetPeerId: peerId, payload: event.candidate });
     };
     peer.ontrack = (event) => {
-      const stream = event.streams[0] ?? new MediaStream([event.track]);
+      const stream = event.streams[0] ?? remoteStreamsRef.current.get(peerId) ?? new MediaStream();
+      if (!event.streams[0] && !stream.getTracks().some((track) => track.id === event.track.id)) {
+        stream.addTrack(event.track);
+      }
+      remoteStreamsRef.current.set(peerId, stream);
       setParticipants((current) => current.map((participant) =>
         participant.peerId === peerId ? { ...participant, stream } : participant
       ));
     };
     peer.onconnectionstatechange = () => {
-      if (["failed", "closed"].includes(peer.connectionState)) removePeer(peerId);
+      if (peer.connectionState === "failed") {
+        setError("Could not establish a media path to a participant. Check the TURN relay configuration.");
+      }
+      if (peer.connectionState === "closed") removePeer(peerId);
     };
     peersRef.current.set(peerId, peer);
     setParticipants((current) => current.some((participant) => participant.peerId === peerId)
@@ -170,6 +206,7 @@ export function Recorder({ roomId, isOwner, currentUser }: RecorderProps) {
     let active = true;
     let socket: WebSocket | null = null;
     const peerConnections = peersRef.current;
+    const remoteStreams = remoteStreamsRef.current;
 
     async function connect() {
       try {
@@ -187,55 +224,59 @@ export function Recorder({ roomId, isOwner, currentUser }: RecorderProps) {
         socketRef.current = socket;
         socket.onopen = () => setConnectionState("Authenticating…");
         socket.onmessage = async (event) => {
-          const message = JSON.parse(String(event.data)) as SignalMessage;
-          if (message.type === "ready") {
-            setConnectionState("Live");
-            sendSignal({ type: "join" });
-            return;
-          }
-          if (message.type === "error") {
-            setError(message.message || "Realtime connection failed");
-            return;
-          }
-          if (message.type === "room-ended") {
-            router.push("/ended");
-            return;
-          }
-          if (message.type === "peers") {
-            for (const remote of message.peers ?? []) {
-              const peer = createPeer(remote.peerId, remote.user);
-              const offer = await peer.createOffer();
-              await peer.setLocalDescription(offer);
-              sendSignal({ type: "offer", targetPeerId: remote.peerId, payload: offer });
+          try {
+            const message = JSON.parse(String(event.data)) as SignalMessage;
+            if (message.type === "ready") {
+              setConnectionState("Live");
+              sendSignal({ type: "join" });
+              return;
             }
-            return;
-          }
-          if (message.type === "peer-joined" && message.peerId) {
-            createPeer(message.peerId, message.user);
-            return;
-          }
-          if (message.type === "peer-left" && message.peerId) {
-            removePeer(message.peerId);
-            return;
-          }
-          if (!message.peerId) return;
-          const peer = createPeer(message.peerId, message.user);
-          if (message.type === "offer") {
-            await peer.setRemoteDescription(message.payload as RTCSessionDescriptionInit);
-            const answer = await peer.createAnswer();
-            await peer.setLocalDescription(answer);
-            sendSignal({ type: "answer", targetPeerId: message.peerId, payload: answer });
-          } else if (message.type === "answer") {
-            await peer.setRemoteDescription(message.payload as RTCSessionDescriptionInit);
-          } else if (message.type === "ice-candidate") {
-            const candidate = message.payload as RTCIceCandidateInit;
-            if (peer.remoteDescription) await peer.addIceCandidate(candidate);
-            else candidatesRef.current.set(message.peerId, [...(candidatesRef.current.get(message.peerId) ?? []), candidate]);
-          }
+            if (message.type === "error") {
+              setError(message.message || "Realtime connection failed");
+              return;
+            }
+            if (message.type === "room-ended") {
+              router.push("/ended");
+              return;
+            }
+            if (message.type === "peers") {
+              for (const remote of message.peers ?? []) {
+                const peer = createPeer(remote.peerId, remote.user);
+                const offer = await peer.createOffer();
+                await peer.setLocalDescription(offer);
+                sendSignal({ type: "offer", targetPeerId: remote.peerId, payload: offer });
+              }
+              return;
+            }
+            if (message.type === "peer-joined" && message.peerId) {
+              createPeer(message.peerId, message.user);
+              return;
+            }
+            if (message.type === "peer-left" && message.peerId) {
+              removePeer(message.peerId);
+              return;
+            }
+            if (!message.peerId) return;
+            const peer = createPeer(message.peerId, message.user);
+            if (message.type === "offer") {
+              await peer.setRemoteDescription(message.payload as RTCSessionDescriptionInit);
+              const answer = await peer.createAnswer();
+              await peer.setLocalDescription(answer);
+              sendSignal({ type: "answer", targetPeerId: message.peerId, payload: answer });
+            } else if (message.type === "answer") {
+              await peer.setRemoteDescription(message.payload as RTCSessionDescriptionInit);
+            } else if (message.type === "ice-candidate") {
+              const candidate = message.payload as RTCIceCandidateInit;
+              if (peer.remoteDescription) await peer.addIceCandidate(candidate);
+              else candidatesRef.current.set(message.peerId, [...(candidatesRef.current.get(message.peerId) ?? []), candidate]);
+            }
 
-          if (peer.remoteDescription) {
-            for (const candidate of candidatesRef.current.get(message.peerId) ?? []) await peer.addIceCandidate(candidate);
-            candidatesRef.current.delete(message.peerId);
+            if (peer.remoteDescription) {
+              for (const candidate of candidatesRef.current.get(message.peerId) ?? []) await peer.addIceCandidate(candidate);
+              candidatesRef.current.delete(message.peerId);
+            }
+          } catch (caught) {
+            setError(caught instanceof Error ? `WebRTC negotiation failed: ${caught.message}` : "WebRTC negotiation failed.");
           }
         };
         socket.onerror = () => setError("Could not connect to the realtime server.");
@@ -254,6 +295,7 @@ export function Recorder({ roomId, isOwner, currentUser }: RecorderProps) {
       socket?.close(1000, "Page closed");
       peerConnections.forEach((peer) => peer.close());
       peerConnections.clear();
+      remoteStreams.clear();
       streamRef.current?.getTracks().forEach((track) => track.stop());
       recorderStreamRef.current?.getTracks().forEach((track) => track.stop());
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
@@ -295,8 +337,22 @@ export function Recorder({ roomId, isOwner, currentUser }: RecorderProps) {
       return;
     }
     videoElementsRef.current.set(peerId, element);
-    if (stream && element.srcObject !== stream) element.srcObject = stream;
+    if (stream && element.srcObject !== stream) {
+      element.srcObject = stream;
+      if (peerId !== "local") {
+        void element.play()
+          .catch(() => setAudioBlocked(true));
+      }
+    }
   }, []);
+
+  async function enableParticipantAudio() {
+    const remoteVideos = Array.from(videoElementsRef.current.entries())
+      .filter(([peerId]) => peerId !== "local")
+      .map(([, video]) => video);
+    const results = await Promise.allSettled(remoteVideos.map((video) => video.play()));
+    setAudioBlocked(results.some((result) => result.status === "rejected"));
+  }
 
   function drawCompositeFrame(canvas: HTMLCanvasElement) {
     const context = canvas.getContext("2d");
@@ -585,6 +641,11 @@ export function Recorder({ roomId, isOwner, currentUser }: RecorderProps) {
         )}
         <button className="btn" onClick={toggleMic} disabled={ending}>{micOn ? "Mute mic" : "Unmute mic"}</button>
         <button className="btn" onClick={toggleCam} disabled={ending}>{camOn ? "Turn camera off" : "Turn camera on"}</button>
+        {audioBlocked && (
+          <button className="btn btnPrimary" onClick={() => void enableParticipantAudio()} disabled={ending}>
+            Enable participant audio
+          </button>
+        )}
         {isOwner && <button className="btn" onClick={shareScreen} disabled={ending}>Share screen</button>}
         <button className="btn btnDanger" onClick={endCall} disabled={ending}>
           {ending ? "Leaving…" : isOwner ? "End room" : "Leave room"}
