@@ -14,6 +14,32 @@ type ClientMessage = {
   payload?: unknown;
 };
 
+type SignalingEvent =
+  | {
+      type: "peer-joined";
+      roomId: string;
+      peerId: string;
+      user: ReturnType<typeof peerSummary>["user"];
+    }
+  | {
+      type: "peer-left";
+      roomId: string;
+      peerId: string;
+    }
+  | {
+      type: "signal";
+      signalType: "offer" | "answer" | "ice-candidate";
+      roomId: string;
+      targetPeerId: string;
+      peerId: string;
+      user: ReturnType<typeof peerSummary>["user"];
+      payload?: unknown;
+    }
+  | {
+      type: "room-ended";
+      roomId: string;
+    };
+
 type Peer = {
   peerId: string;
   socket: WebSocket;
@@ -47,6 +73,66 @@ function pushNotification(email: string, event: InviteRealtimeEvent) {
   }
 }
 
+function deliverSignalingEvent(event: SignalingEvent) {
+  const localPeers = rooms.get(event.roomId);
+  if (!localPeers) return;
+
+  if (event.type === "peer-joined") {
+    for (const peer of localPeers.values()) {
+      if (peer.peerId !== event.peerId) {
+        send(peer.socket, {
+          type: "peer-joined",
+          roomId: event.roomId,
+          peerId: event.peerId,
+          user: event.user
+        });
+      }
+    }
+    return;
+  }
+
+  if (event.type === "peer-left") {
+    for (const peer of localPeers.values()) {
+      if (peer.peerId !== event.peerId) {
+        send(peer.socket, { type: "peer-left", roomId: event.roomId, peerId: event.peerId });
+      }
+    }
+    return;
+  }
+
+  if (event.type === "signal") {
+    const target = localPeers.get(event.targetPeerId);
+    if (!target) return;
+    send(target.socket, {
+      type: event.signalType,
+      roomId: event.roomId,
+      peerId: event.peerId,
+      user: event.user,
+      payload: event.payload
+    });
+    return;
+  }
+
+  for (const peer of Array.from(localPeers.values())) {
+    send(peer.socket, { type: "room-ended", roomId: event.roomId });
+    peer.socket.close(1000, "Room ended");
+  }
+}
+
+async function publishSignalingEvent(event: SignalingEvent) {
+  if (!publisher) {
+    deliverSignalingEvent(event);
+    return;
+  }
+
+  try {
+    await publisher.publish(`signaling:${event.roomId}`, JSON.stringify(event));
+  } catch (error) {
+    console.error("Unable to publish signaling event", error);
+    deliverSignalingEvent(event);
+  }
+}
+
 app.post("/events/invite", (request, response) => {
   const secret = process.env.SIGNALING_INTERNAL_SECRET;
   if (!secret || request.headers.authorization !== `Bearer ${secret}`) {
@@ -66,13 +152,20 @@ app.post("/events/invite", (request, response) => {
 });
 
 if (subscriber) {
-  void subscriber.psubscribe("notifications:*");
+  void subscriber.psubscribe("notifications:*", "signaling:*");
   subscriber.on("pmessage", (_pattern, channel, raw) => {
     try {
-      const email = channel.slice("notifications:".length).toLowerCase();
-      pushNotification(email, JSON.parse(raw) as InviteRealtimeEvent);
+      if (channel.startsWith("notifications:")) {
+        const email = channel.slice("notifications:".length).toLowerCase();
+        pushNotification(email, JSON.parse(raw) as InviteRealtimeEvent);
+        return;
+      }
+
+      if (channel.startsWith("signaling:")) {
+        deliverSignalingEvent(JSON.parse(raw) as SignalingEvent);
+      }
     } catch (error) {
-      console.error("Invalid realtime notification", error);
+      console.error("Invalid realtime event", error);
     }
   });
 }
@@ -84,13 +177,14 @@ function peerSummary(peer: Peer) {
   };
 }
 
-function routeSignal(roomId: string, source: Peer, message: ClientMessage) {
+async function routeSignal(roomId: string, source: Peer, message: ClientMessage) {
   if (!message.targetPeerId) return;
-  const target = rooms.get(roomId)?.get(message.targetPeerId);
-  if (!target) return;
-  send(target.socket, {
-    type: message.type,
+  if (!["offer", "answer", "ice-candidate"].includes(message.type)) return;
+  await publishSignalingEvent({
+    type: "signal",
+    signalType: message.type as "offer" | "answer" | "ice-candidate",
     roomId,
+    targetPeerId: message.targetPeerId,
     peerId: source.peerId,
     user: peerSummary(source).user,
     payload: message.payload
@@ -122,11 +216,7 @@ async function joinRoom(peer: Peer, roomId: string) {
   peers.set(peer.peerId, peer);
   rooms.set(roomId, peers);
 
-  for (const existing of peers.values()) {
-    if (existing.peerId !== peer.peerId) {
-      send(existing.socket, { type: "peer-joined", roomId, ...peerSummary(peer) });
-    }
-  }
+  await publishSignalingEvent({ type: "peer-joined", roomId, ...peerSummary(peer) });
 
   return room;
 }
@@ -189,12 +279,10 @@ wss.on("connection", (socket: WebSocket) => {
 
       if (!currentRoomId || message.roomId !== currentRoomId) return;
       if (["offer", "answer", "ice-candidate"].includes(message.type)) {
-        routeSignal(currentRoomId, peer, message);
+        await routeSignal(currentRoomId, peer, message);
       }
       if (message.type === "end-room" && currentIsOwner) {
-        const roomPeers = Array.from(rooms.get(currentRoomId)?.values() ?? []);
-        roomPeers.forEach((roomPeer) => send(roomPeer.socket, { type: "room-ended", roomId: currentRoomId }));
-        roomPeers.forEach((roomPeer) => roomPeer.socket.close(1000, "Room ended"));
+        await publishSignalingEvent({ type: "room-ended", roomId: currentRoomId });
         return;
       }
       if (message.type === "leave") socket.close(1000, "Left room");
@@ -211,9 +299,7 @@ wss.on("connection", (socket: WebSocket) => {
     const peers = rooms.get(currentRoomId);
     peers?.delete(peer.peerId);
     if (peers?.size === 0) rooms.delete(currentRoomId);
-    for (const remaining of peers?.values() ?? []) {
-      send(remaining.socket, { type: "peer-left", roomId: currentRoomId, peerId: peer.peerId });
-    }
+    void publishSignalingEvent({ type: "peer-left", roomId: currentRoomId, peerId: peer.peerId });
   });
 });
 

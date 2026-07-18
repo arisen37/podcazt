@@ -227,12 +227,13 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
           try {
             const message = JSON.parse(String(event.data)) as SignalMessage;
             if (message.type === "ready") {
-              setConnectionState("Live");
+              setConnectionState("Joining…");
               sendSignal({ type: "join" });
               return;
             }
             if (message.type === "error") {
               setError(message.message || "Realtime connection failed");
+              setConnectionState("Room unavailable");
               return;
             }
             if (message.type === "room-ended") {
@@ -240,16 +241,18 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
               return;
             }
             if (message.type === "peers") {
+              setConnectionState("Live");
               for (const remote of message.peers ?? []) {
-                const peer = createPeer(remote.peerId, remote.user);
-                const offer = await peer.createOffer();
-                await peer.setLocalDescription(offer);
-                sendSignal({ type: "offer", targetPeerId: remote.peerId, payload: offer });
+                createPeer(remote.peerId, remote.user);
               }
               return;
             }
             if (message.type === "peer-joined" && message.peerId) {
-              createPeer(message.peerId, message.user);
+              if (peersRef.current.has(message.peerId)) return;
+              const peer = createPeer(message.peerId, message.user);
+              const offer = await peer.createOffer();
+              await peer.setLocalDescription(offer);
+              sendSignal({ type: "offer", targetPeerId: message.peerId, payload: offer });
               return;
             }
             if (message.type === "peer-left" && message.peerId) {
