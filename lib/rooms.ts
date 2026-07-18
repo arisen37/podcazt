@@ -20,25 +20,16 @@ export async function createRoomForUser(input: {
     (input.kind === "podcast" ? "Untitled podcast" : "Untitled self recording");
 
   return prisma.$transaction(async (tx) => {
-    const video = await tx.video.create({
-      data: {
-        ownerId: input.user.id,
-        name: roomName,
-        link: null
-      }
-    });
-
     const room = await tx.room.create({
       data: {
         roomOwnerId: input.user.id,
-        videoId: video.id,
         name: roomName,
-        kind: routeKindToPrisma(input.kind),
-        members: {
-          connect: { id: input.user.id }
-        }
-      },
-      include: { members: true, video: true }
+        kind: routeKindToPrisma(input.kind)
+      }
+    });
+
+    const video = await tx.video.create({
+      data: { roomId: room.id }
     });
 
     return { room, video };
@@ -46,19 +37,38 @@ export async function createRoomForUser(input: {
 }
 
 export async function assertRoomAccess(roomId: string, userId: string) {
+  const room = await prisma.room.findFirst({
+    where: {
+      id: roomId,
+      closedAt: null,
+      OR: [
+        { roomOwnerId: userId },
+        { members: { some: { userId } } }
+      ]
+    },
+    include: {
+      recording: { select: { id: true } }
+    }
+  });
+
+  if (!room) throw new Error("Room is closed, missing, or access was denied");
+  if (!room.recording) throw new Error("Room recording metadata is missing");
+
+  return { ...room, videoId: room.recording.id };
+}
+
+export async function getRoomRoster(roomId: string) {
   const room = await prisma.room.findUnique({
     where: { id: roomId },
-    include: {
+    select: {
+      owner: { select: { id: true, name: true, username: true } },
       members: {
-        select: { id: true }
+        orderBy: { joinedAt: "asc" },
+        select: { user: { select: { id: true, name: true, username: true } } }
       }
     }
   });
 
-  if (!room) throw new Error("Room not found");
-  if (room.roomOwnerId !== userId && !room.members.some((member) => member.id === userId)) {
-    throw new Error("You do not have access to this room");
-  }
-
-  return room;
+  if (!room) return [];
+  return [room.owner, ...room.members.map((membership) => membership.user)];
 }

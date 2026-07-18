@@ -7,77 +7,82 @@ export default async function DashboardPage() {
   const user = await getCurrentUser();
   if (!user) redirect("/signin");
 
-  const [videos, invites] = await Promise.all([
-    prisma.video.findMany({
-      where: { ownerId: user.id },
-      orderBy: { createdAt: "desc" },
-      take: 20
-    }),
-    prisma.invite.findMany({
-      where: { invitedEmail: user.email, status: "PENDING" },
-      include: {
-        room: true,
-        inviter: { select: { name: true, username: true, email: true } }
-      },
-      orderBy: { createdAt: "desc" }
-    })
-  ]);
+  const videos = await prisma.video.findMany({
+    where: { room: { roomOwnerId: user.id }, completedAt: { not: null } },
+    include: {
+      frames: { orderBy: { createdAt: "desc" }, take: 1 },
+      room: { select: { name: true, kind: true } }
+    },
+    orderBy: { completedAt: "desc" },
+    take: 24
+  });
 
   return (
-    <main className="shell page">
-      <div className="topbar">
-        <div>
-          <p className="pill">Signed in as @{user.username}</p>
-          <h1 className="pageTitle">Dashboard</h1>
-        </div>
-        <Link className="btn btnPrimary" href="/create">+ Create new</Link>
-      </div>
-
-      <div className="grid dashboardGrid">
-        <section className="card">
-          <div className="tile">
-            <h2>Past recorded videos</h2>
-            <p className="muted">Recordings appear here after all browser chunks are verified and uploaded.</p>
+    <main className="dashboardPage">
+      <div className="shell dashboardShell">
+        <header className="dashboardHeader">
+          <div>
+            <p className="dashboardKicker">Your studio</p>
+            <h1>Welcome back, {user.name.split(" ")[0]}.</h1>
           </div>
+          <div className="dashboardActions">
+            <Link className="btn dashboardCreate" href="/create">New recording</Link>
+          </div>
+        </header>
+
+        <section className="librarySection">
+          <div className="libraryHeading">
+            <div>
+              <h2>Recordings</h2>
+              <p>Completed sessions and their captured preview frames.</p>
+            </div>
+            <span>{videos.length} {videos.length === 1 ? "video" : "videos"}</span>
+          </div>
+
           {videos.length === 0 ? (
-            <div className="videoCard muted">No recordings yet.</div>
+            <div className="dashboardEmpty">
+              <div className="emptyPlay">▶</div>
+              <h2>No footage yet</h2>
+              <p>Only completed recordings with video content appear here.</p>
+              <Link className="btn dashboardCreate" href="/create">Create your first recording</Link>
+            </div>
           ) : (
-            videos.map((video) => (
-              <div className="videoCard" key={video.id}>
-                <div>
-                  <h3>{video.name}</h3>
-                  <p className="muted">{video.createdAt.toLocaleString()}</p>
-                </div>
-                {video.link ? (
-                  <a className="btn" href={video.link} target="_blank" rel="noreferrer">Open</a>
-                ) : (
-                  <span className="pill">Pending upload</span>
-                )}
-              </div>
-            ))
-          )}
-        </section>
-
-        <section className="card">
-          <div className="tile">
-            <h2>Invites</h2>
-            <p className="muted">Podcast room invitations sent to your email.</p>
-          </div>
-          {invites.length === 0 ? (
-            <div className="videoCard muted">No incoming invites.</div>
-          ) : (
-            invites.map((invite) => (
-              <div className="videoCard" key={invite.id}>
-                <div>
-                  <h3>{invite.room.name}</h3>
-                  <p className="muted">From {invite.inviter.name || invite.inviter.username}</p>
-                </div>
-                <Link className="btn btnSuccess" href={`/invite/${invite.id}`}>Join</Link>
-              </div>
-            ))
+            <div className="videoLibraryGrid">
+              {videos.map((video) => (
+                <a className="libraryCard" href={video.link as string} target="_blank" rel="noreferrer" key={video.id}>
+                  <div className="libraryPreview">
+                    {video.frames[0]?.link ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={video.frames[0].link} alt={`Preview for ${video.room.name}`} />
+                    ) : (
+                      <div className="previewFallback"><span>▶</span></div>
+                    )}
+                    <span className="previewPlay">▶</span>
+                  </div>
+                  <div className="libraryMeta">
+                    <h3>{video.room.name}</h3>
+                    <div>
+                      <span>
+                        {video.room.kind === "PODCAST" ? "Podcast" : "Solo recording"}
+                        {video.byteSize ? ` · ${formatBytes(video.byteSize)}` : ""}
+                      </span>
+                      <time dateTime={(video.completedAt ?? video.createdAt).toISOString()}>
+                        {(video.completedAt ?? video.createdAt).toLocaleDateString()}
+                      </time>
+                    </div>
+                  </div>
+                </a>
+              ))}
+            </div>
           )}
         </section>
       </div>
     </main>
   );
+}
+
+function formatBytes(value: bigint) {
+  const bytes = Number(value);
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

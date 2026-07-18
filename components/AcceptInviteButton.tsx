@@ -19,6 +19,7 @@ export function AcceptInviteButton({ inviteId }: { inviteId: string }) {
       setLoading(false);
       return;
     }
+    window.dispatchEvent(new CustomEvent("podcazt:invite-accepted", { detail: { inviteId } }));
     router.push(`/permissions?roomId=${body.roomId}`);
   }
 

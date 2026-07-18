@@ -26,7 +26,11 @@ export function InviteParticipant({ roomId }: { roomId: string }) {
       return;
     }
     setSucceeded(true);
-    setMessage(body.email?.sent ? "Invite sent by email." : "Invite created. Configure SMTP to send emails.");
+    const deliveries = [body.realtimeDelivered && "realtime notification", body.email?.sent && "email"].filter(Boolean);
+    setMessage(deliveries.length
+      ? `Invite sent by ${deliveries.join(" and ")}.`
+      : `Invite created. ${body.email?.reason || "Realtime and email delivery are not configured."}`
+    );
     event.currentTarget.reset();
   }
 

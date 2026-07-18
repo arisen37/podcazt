@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { sendInviteEmail } from "@/lib/email";
 import { assertRoomAccess } from "@/lib/rooms";
 import { prisma } from "@/lib/prisma";
+import { publishInviteEvent } from "@/lib/realtime-events";
 import { InviteSchema } from "@/lib/validation";
 
 export async function POST(request: NextRequest) {
@@ -26,20 +27,56 @@ export async function POST(request: NextRequest) {
   if (room.kind !== "PODCAST") {
     return fail("Inviting participants is only available for podcast rooms", 400);
   }
+  if (room.roomOwnerId !== user.id) {
+    return fail("Only the room owner can invite participants", 403);
+  }
+  if (room.closedAt) return fail("This room is already closed", 409);
+  if (parsed.data.emailId === user.email) return fail("You are already in this room", 409);
 
   const invitedUser = await prisma.user.findUnique({
     where: { email: parsed.data.emailId },
     select: { id: true }
   });
 
-  const invite = await prisma.invite.create({
-    data: {
-      inviterId: user.id,
-      invitedId: invitedUser?.id ?? null,
-      invitedEmail: parsed.data.emailId,
+  const existingInvite = await prisma.invite.findUnique({
+    where: { roomId_invitedEmail: { roomId: room.id, invitedEmail: parsed.data.emailId } }
+  });
+  if (existingInvite?.status === "PENDING") return fail("This participant already has a pending invite", 409);
+  if (existingInvite?.status === "ACCEPTED") return fail("This participant is already a room member", 409);
+
+  const invite = existingInvite
+    ? await prisma.invite.update({
+        where: { id: existingInvite.id },
+        data: {
+          inviterId: user.id,
+          invitedId: invitedUser?.id ?? null,
+          status: "PENDING",
+          createdAt: new Date(),
+          respondedAt: null
+        }
+      })
+    : await prisma.invite.create({
+        data: {
+          inviterId: user.id,
+          invitedId: invitedUser?.id ?? null,
+          invitedEmail: parsed.data.emailId,
+          roomId: room.id,
+          status: "PENDING"
+        }
+      });
+
+  const realtimeDelivered = await publishInviteEvent(parsed.data.emailId, {
+    type: "invite",
+    invite: {
+      id: invite.id,
       roomId: room.id,
-      status: "PENDING"
+      roomName: room.name,
+      inviterName: user.name || user.username,
+      createdAt: invite.createdAt.toISOString()
     }
+  }).catch((error) => {
+    console.error("Realtime invite delivery failed", error);
+    return false;
   });
 
   const emailResult = await sendInviteEmail({
@@ -50,5 +87,5 @@ export async function POST(request: NextRequest) {
     requestOrigin: request.nextUrl.origin
   });
 
-  return ok({ invite, email: emailResult });
+  return ok({ invite, email: emailResult, realtimeDelivered });
 }

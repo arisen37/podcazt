@@ -12,6 +12,10 @@ enum RoomKind {
   SELF_RECORD
 }
 
+enum RoomMemberRole {
+  PARTICIPANT
+}
+
 enum InviteStatus {
   PENDING
   ACCEPTED
@@ -26,27 +30,61 @@ model User {
   name      String
   createdAt DateTime @default(now()) @map("created_at")
 
-  videos       Video[]  @relation("UserVideos")
-  ownedRooms   Room[]   @relation("RoomOwner")
-  sentInvites  Invite[] @relation("SentInvites")
-  recvInvites  Invite[] @relation("ReceivedInvites")
-  roomMembers  Room[]   @relation("RoomMembers")
+  ownedRooms      Room[]       @relation("RoomOwner")
+  roomMemberships RoomMember[]
+  sentInvites     Invite[]     @relation("SentInvites")
+  receivedInvites Invite[]     @relation("ReceivedInvites")
 
   @@map("users")
 }
 
+model Room {
+  id          String    @id @default(uuid()) @db.Uuid
+  roomOwnerId String    @map("room_owner_id") @db.Uuid
+  name        String
+  kind        RoomKind
+  createdAt   DateTime  @default(now()) @map("created_at")
+  closedAt    DateTime? @map("closed_at")
+
+  owner     User         @relation("RoomOwner", fields: [roomOwnerId], references: [id], onDelete: Cascade)
+  members   RoomMember[]
+  recording Video?
+  invites   Invite[]
+
+  @@index([roomOwnerId, createdAt(sort: Desc)])
+  @@index([closedAt])
+  @@map("rooms")
+}
+
+model RoomMember {
+  roomId   String         @map("room_id") @db.Uuid
+  userId   String         @map("user_id") @db.Uuid
+  role     RoomMemberRole @default(PARTICIPANT)
+  joinedAt DateTime       @default(now()) @map("joined_at")
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([roomId, userId])
+  @@index([userId, joinedAt(sort: Desc)])
+  @@map("room_members")
+}
+
 model Video {
-  id        String   @id @default(uuid()) @db.Uuid
-  ownerId   String   @map("owner_id") @db.Uuid
-  name      String
-  link      String?
-  createdAt DateTime @default(now()) @map("created_at")
+  id          String    @id @default(uuid()) @db.Uuid
+  roomId      String    @unique @map("room_id") @db.Uuid
+  link        String?
+  storagePath String?   @map("storage_path")
+  mimeType    String?   @map("mime_type")
+  byteSize    BigInt?   @map("byte_size")
+  sha256      String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  completedAt DateTime? @map("completed_at")
 
-  owner  User    @relation("UserVideos", fields: [ownerId], references: [id], onDelete: Cascade)
+  room   Room    @relation(fields: [roomId], references: [id], onDelete: Cascade)
   frames Frame[]
-  rooms  Room[]
 
-  @@index([ownerId])
+  @@index([completedAt(sort: Desc)])
   @@map("videos")
 }
 
@@ -58,27 +96,8 @@ model Frame {
 
   video Video @relation(fields: [videoId], references: [id], onDelete: Cascade)
 
-  @@index([videoId])
+  @@index([videoId, createdAt(sort: Desc)])
   @@map("frames")
-}
-
-model Room {
-  id          String    @id @default(uuid()) @db.Uuid
-  roomOwnerId String    @map("room_owner_id") @db.Uuid
-  videoId     String    @map("video_id") @db.Uuid
-  name        String
-  kind        RoomKind
-  createdAt   DateTime  @default(now()) @map("created_at")
-  closedAt    DateTime? @map("closed_at")
-
-  owner   User     @relation("RoomOwner", fields: [roomOwnerId], references: [id], onDelete: Cascade)
-  video   Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
-  invites Invite[]
-  members User[]   @relation("RoomMembers")
-
-  @@index([roomOwnerId])
-  @@index([videoId])
-  @@map("rooms")
 }
 
 model Invite {
@@ -89,12 +108,14 @@ model Invite {
   roomId       String       @map("room_id") @db.Uuid
   status       InviteStatus @default(PENDING)
   createdAt    DateTime     @default(now()) @map("created_at")
+  respondedAt  DateTime?    @map("responded_at")
 
   inviter User  @relation("SentInvites", fields: [inviterId], references: [id], onDelete: Cascade)
   invited User? @relation("ReceivedInvites", fields: [invitedId], references: [id], onDelete: SetNull)
   room    Room  @relation(fields: [roomId], references: [id], onDelete: Cascade)
 
-  @@index([invitedEmail])
-  @@index([roomId])
+  @@unique([roomId, invitedEmail])
+  @@index([invitedEmail, status, createdAt(sort: Desc)])
+  @@index([inviterId, createdAt(sort: Desc)])
   @@map("invites")
 }

@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "dev:signal": "tsx server/signaling.ts",
+    "dev:signal": "tsx --env-file=.env server/signaling.ts",
+    "start:signal": "NODE_ENV=production tsx server/signaling.ts",
     "build": "next build",
     "start": "next start",
     "postinstall": "prisma generate",

@@ -2,7 +2,7 @@ import Link from "next/link";
 
 export default function Home() {
   return (
-    <main className="shell hero">
+    <main className="shell hero publicHome">
       <section className="homeHero">
         <h1>
           Playground for

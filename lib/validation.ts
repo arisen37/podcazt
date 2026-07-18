@@ -56,6 +56,5 @@ export const CompleteRecordingSchema = z.object({
 
 export const FrameUploadSchema = z.object({
   roomId: z.string().uuid(),
-  videoId: z.string().uuid(),
-  recordingId: z.string().min(8).max(120)
+  videoId: z.string().uuid()
 });

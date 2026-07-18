@@ -20,8 +20,7 @@ export async function POST(request: NextRequest) {
   const file = formData.get("file");
   const parsed = FrameUploadSchema.safeParse({
     roomId: formData.get("roomId"),
-    videoId: formData.get("videoId"),
-    recordingId: formData.get("recordingId")
+    videoId: formData.get("videoId")
   });
 
   if (!parsed.success) return fail("Invalid frame payload", 422, parsed.error.flatten());
@@ -29,6 +28,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const room = await assertRoomAccess(parsed.data.roomId, user.id);
+    if (room.roomOwnerId !== user.id) return fail("Only the room owner can upload recording frames", 403);
     if (room.videoId !== parsed.data.videoId) {
       return fail("Video does not belong to this room", 403);
     }
@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
     if (buffer.length === 0) return fail("Frame image is empty", 422);
 
     const bucket = getEnv("SUPABASE_VIDEOS_BUCKET", "videos");
-    const objectPath = `frames/${room.roomOwnerId}/${room.id}/${parsed.data.recordingId}.png`;
+    const objectPath = `recordings/${parsed.data.videoId}/preview.jpg`;
     const supabase = getSupabaseAdmin();
     const { error: uploadError } = await supabase.storage
       .from(bucket)

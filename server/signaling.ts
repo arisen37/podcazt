@@ -1,23 +1,35 @@
 import express from "express";
 import http from "http";
 import Redis from "ioredis";
-import { WebSocketServer, WebSocket } from "ws";
+import { WebSocketServer, WebSocket, type RawData } from "ws";
+import { prisma } from "../lib/prisma";
+import { verifyRealtimeToken } from "../lib/realtime-token";
+import type { InviteRealtimeEvent } from "../lib/realtime-events";
+import type { SessionUser } from "../lib/types";
 
-type SignalMessage = {
-  type: "join" | "offer" | "answer" | "ice-candidate" | "leave";
-  roomId: string;
-  peerId: string;
+type ClientMessage = {
+  type: "join" | "offer" | "answer" | "ice-candidate" | "leave" | "end-room";
+  roomId?: string;
   targetPeerId?: string;
   payload?: unknown;
+};
+
+type Peer = {
+  peerId: string;
+  socket: WebSocket;
+  user: SessionUser;
+  alive: boolean;
 };
 
 const port = Number(process.env.SIGNALING_PORT ?? 4000);
 const redisUrl = process.env.REDIS_URL;
 const app = express();
+app.use(express.json({ limit: "32kb" }));
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
-const rooms = new Map<string, Map<string, WebSocket>>();
-
+const wss = new WebSocketServer({ noServer: true });
+const rooms = new Map<string, Map<string, Peer>>();
+const notificationSockets = new Map<string, Set<WebSocket>>();
+const authenticatedUsers = new WeakMap<WebSocket, SessionUser>();
 const publisher = redisUrl ? new Redis(redisUrl) : null;
 const subscriber = redisUrl ? new Redis(redisUrl) : null;
 
@@ -25,62 +37,210 @@ app.get("/health", (_request, response) => {
   response.json({ ok: true, service: "podcazt-signaling" });
 });
 
-function broadcast(message: SignalMessage, excludePeerId?: string) {
-  const peers = rooms.get(message.roomId);
-  if (!peers) return;
+function send(socket: WebSocket, message: unknown) {
+  if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+}
 
-  for (const [peerId, socket] of peers.entries()) {
-    if (peerId === excludePeerId) continue;
-    if (message.targetPeerId && peerId !== message.targetPeerId) continue;
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(message));
-    }
+function pushNotification(email: string, event: InviteRealtimeEvent) {
+  for (const socket of notificationSockets.get(email.toLowerCase()) ?? []) {
+    send(socket, event);
   }
 }
 
-async function publish(message: SignalMessage) {
-  if (!publisher) {
-    broadcast(message, message.type === "join" ? message.peerId : undefined);
+app.post("/events/invite", (request, response) => {
+  const secret = process.env.SIGNALING_INTERNAL_SECRET;
+  if (!secret || request.headers.authorization !== `Bearer ${secret}`) {
+    response.status(401).json({ error: "Unauthorized" });
     return;
   }
-  await publisher.publish(`room:${message.roomId}`, JSON.stringify(message));
-}
+
+  const email = typeof request.body?.email === "string" ? request.body.email.toLowerCase() : "";
+  const event = request.body?.event as InviteRealtimeEvent | undefined;
+  if (!email || event?.type !== "invite" || !event.invite?.id) {
+    response.status(422).json({ error: "Invalid invite event" });
+    return;
+  }
+
+  pushNotification(email, event);
+  response.json({ delivered: true });
+});
 
 if (subscriber) {
-  subscriber.psubscribe("room:*");
-  subscriber.on("pmessage", (_pattern, _channel, raw) => {
-    const message = JSON.parse(raw) as SignalMessage;
-    broadcast(message, message.type === "join" ? message.peerId : undefined);
+  void subscriber.psubscribe("notifications:*");
+  subscriber.on("pmessage", (_pattern, channel, raw) => {
+    try {
+      const email = channel.slice("notifications:".length).toLowerCase();
+      pushNotification(email, JSON.parse(raw) as InviteRealtimeEvent);
+    } catch (error) {
+      console.error("Invalid realtime notification", error);
+    }
   });
 }
 
-wss.on("connection", (socket) => {
-  let currentRoomId: string | null = null;
-  let currentPeerId: string | null = null;
+function peerSummary(peer: Peer) {
+  return {
+    peerId: peer.peerId,
+    user: { id: peer.user.id, name: peer.user.name, username: peer.user.username }
+  };
+}
 
-  socket.on("message", async (raw) => {
-    const message = JSON.parse(raw.toString()) as SignalMessage;
-    if (!message.roomId || !message.peerId || !message.type) return;
+function routeSignal(roomId: string, source: Peer, message: ClientMessage) {
+  if (!message.targetPeerId) return;
+  const target = rooms.get(roomId)?.get(message.targetPeerId);
+  if (!target) return;
+  send(target.socket, {
+    type: message.type,
+    roomId,
+    peerId: source.peerId,
+    user: peerSummary(source).user,
+    payload: message.payload
+  });
+}
 
-    if (message.type === "join") {
-      currentRoomId = message.roomId;
-      currentPeerId = message.peerId;
-      const peers = rooms.get(message.roomId) ?? new Map<string, WebSocket>();
-      peers.set(message.peerId, socket);
-      rooms.set(message.roomId, peers);
-      if (subscriber) await subscriber.subscribe(`room:${message.roomId}`);
+async function joinRoom(peer: Peer, roomId: string) {
+  const room = await prisma.room.findFirst({
+    where: {
+      id: roomId,
+      closedAt: null,
+      OR: [{ roomOwnerId: peer.user.id }, { members: { some: { userId: peer.user.id } } }]
+    },
+    select: { id: true, roomOwnerId: true }
+  });
+
+  if (!room) {
+    send(peer.socket, { type: "error", message: "Room is closed or access was denied" });
+    return null;
+  }
+
+  const peers = rooms.get(roomId) ?? new Map<string, Peer>();
+  send(peer.socket, {
+    type: "peers",
+    roomId,
+    peers: Array.from(peers.values()).map(peerSummary),
+    ownerId: room.roomOwnerId
+  });
+  peers.set(peer.peerId, peer);
+  rooms.set(roomId, peers);
+
+  for (const existing of peers.values()) {
+    if (existing.peerId !== peer.peerId) {
+      send(existing.socket, { type: "peer-joined", roomId, ...peerSummary(peer) });
+    }
+  }
+
+  return room;
+}
+
+server.on("upgrade", async (request, socket, head) => {
+  try {
+    const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+    const token = url.searchParams.get("token");
+    const user = token ? await verifyRealtimeToken(token) : null;
+    if (!user) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
     }
 
-    await publish(message);
+    wss.handleUpgrade(request, socket, head, (websocket) => {
+      authenticatedUsers.set(websocket, user);
+      wss.emit("connection", websocket, request);
+    });
+  } catch {
+    socket.destroy();
+  }
+});
+
+wss.on("connection", (socket: WebSocket) => {
+  const authenticatedUser = authenticatedUsers.get(socket);
+  if (!authenticatedUser) {
+    socket.close(1008, "Unauthorized");
+    return;
+  }
+  const peer: Peer = {
+    peerId: crypto.randomUUID(),
+    socket,
+    user: authenticatedUser,
+    alive: true
+  };
+  let currentRoomId: string | null = null;
+  let currentIsOwner = false;
+  const email = authenticatedUser.email.toLowerCase();
+  const userSockets = notificationSockets.get(email) ?? new Set<WebSocket>();
+  userSockets.add(socket);
+  notificationSockets.set(email, userSockets);
+  send(socket, { type: "ready", peerId: peer.peerId });
+
+  socket.on("pong", () => {
+    peer.alive = true;
   });
 
-  socket.on("close", async () => {
-    if (!currentRoomId || !currentPeerId) return;
-    rooms.get(currentRoomId)?.delete(currentPeerId);
-    await publish({ type: "leave", roomId: currentRoomId, peerId: currentPeerId });
+  socket.on("message", async (raw: RawData) => {
+    try {
+      if (raw.toString().length > 1_000_000) return;
+      const message = JSON.parse(raw.toString()) as ClientMessage;
+
+      if (message.type === "join" && typeof message.roomId === "string" && !currentRoomId) {
+        const room = await joinRoom(peer, message.roomId);
+        currentRoomId = room?.id ?? null;
+        currentIsOwner = room?.roomOwnerId === authenticatedUser.id;
+        return;
+      }
+
+      if (!currentRoomId || message.roomId !== currentRoomId) return;
+      if (["offer", "answer", "ice-candidate"].includes(message.type)) {
+        routeSignal(currentRoomId, peer, message);
+      }
+      if (message.type === "end-room" && currentIsOwner) {
+        const roomPeers = Array.from(rooms.get(currentRoomId)?.values() ?? []);
+        roomPeers.forEach((roomPeer) => send(roomPeer.socket, { type: "room-ended", roomId: currentRoomId }));
+        roomPeers.forEach((roomPeer) => roomPeer.socket.close(1000, "Room ended"));
+        return;
+      }
+      if (message.type === "leave") socket.close(1000, "Left room");
+    } catch (error) {
+      console.error("Invalid signaling message", error);
+    }
+  });
+
+  socket.on("close", () => {
+    userSockets.delete(socket);
+    if (userSockets.size === 0) notificationSockets.delete(email);
+    if (!currentRoomId) return;
+
+    const peers = rooms.get(currentRoomId);
+    peers?.delete(peer.peerId);
+    if (peers?.size === 0) rooms.delete(currentRoomId);
+    for (const remaining of peers?.values() ?? []) {
+      send(remaining.socket, { type: "peer-left", roomId: currentRoomId, peerId: peer.peerId });
+    }
   });
 });
+
+const heartbeat = setInterval(() => {
+  for (const socket of wss.clients) {
+    const peer = Array.from(rooms.values()).flatMap((room) => Array.from(room.values())).find((item) => item.socket === socket);
+    if (peer && !peer.alive) {
+      socket.terminate();
+      continue;
+    }
+    if (peer) peer.alive = false;
+    socket.ping();
+  }
+}, 30_000);
+
+wss.on("close", () => clearInterval(heartbeat));
 
 server.listen(port, () => {
   console.log(`Podcazt signaling server listening on :${port}`);
 });
+
+async function shutdown() {
+  clearInterval(heartbeat);
+  wss.clients.forEach((socket) => socket.close(1001, "Server shutting down"));
+  await Promise.all([publisher?.quit(), subscriber?.quit(), prisma.$disconnect()]);
+  server.close(() => process.exit(0));
+}
+
+process.on("SIGTERM", () => void shutdown());
+process.on("SIGINT", () => void shutdown());

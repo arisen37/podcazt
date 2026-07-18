@@ -22,18 +22,18 @@ export async function POST(
   if (invite.invitedEmail !== user.email) return fail("This invite belongs to another email address", 403);
   if (invite.status !== "PENDING") return fail("Invite is no longer pending", 400);
 
+  const room = await prisma.room.findUnique({ where: { id: invite.roomId }, select: { closedAt: true } });
+  if (!room || room.closedAt) return fail("This room is no longer active", 409);
+
   await prisma.$transaction([
-    prisma.room.update({
-      where: { id: invite.roomId },
-      data: {
-        members: {
-          connect: { id: user.id }
-        }
-      }
+    prisma.roomMember.upsert({
+      where: { roomId_userId: { roomId: invite.roomId, userId: user.id } },
+      create: { roomId: invite.roomId, userId: user.id },
+      update: {}
     }),
     prisma.invite.update({
       where: { id: invite.id },
-      data: { status: "ACCEPTED", invitedId: user.id }
+      data: { status: "ACCEPTED", invitedId: user.id, respondedAt: new Date() }
     })
   ]);
 

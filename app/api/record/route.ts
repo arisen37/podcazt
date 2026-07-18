@@ -29,17 +29,12 @@ function getBucketName() {
   return getEnv("SUPABASE_VIDEOS_BUCKET", "videos");
 }
 
-function getChunkPath(input: {
-  ownerId: string;
-  roomId: string;
-  recordingId: string;
-  chunkIndex: number;
-}) {
-  return `chunks/${input.ownerId}/${input.roomId}/${input.recordingId}/${input.chunkIndex}.webm`;
+function getChunkPath(recordingId: string, chunkIndex: number) {
+  return `uploads/${recordingId}/chunks/${chunkIndex}.webm`;
 }
 
-function getFinalRecordingPath(input: { ownerId: string; roomId: string; recordingId: string }) {
-  return `recordings/${input.ownerId}/${input.roomId}/${input.recordingId}.webm`;
+function getFinalRecordingPath(videoId: string) {
+  return `recordings/${videoId}/video.webm`;
 }
 
 function hashBuffer(buffer: Buffer) {
@@ -62,6 +57,7 @@ async function receiveChunk(request: NextRequest, userId: string) {
 
   try {
     const room = await assertRoomAccess(parsed.data.roomId, userId);
+    if (room.roomOwnerId !== userId) return fail("Only the room owner can record", 403);
     const buffer = Buffer.from(await file.arrayBuffer());
     const sha256 = hashBuffer(buffer);
 
@@ -71,12 +67,7 @@ async function receiveChunk(request: NextRequest, userId: string) {
 
     const supabase = getSupabaseAdmin();
     const bucket = getBucketName();
-    const objectPath = getChunkPath({
-      ownerId: room.roomOwnerId,
-      roomId: room.id,
-      recordingId: parsed.data.recordingId,
-      chunkIndex: parsed.data.chunkIndex
-    });
+    const objectPath = getChunkPath(parsed.data.recordingId, parsed.data.chunkIndex);
 
     const { error: uploadError } = await supabase.storage
       .from(bucket)
@@ -104,17 +95,13 @@ async function completeRecording(request: NextRequest, userId: string) {
 
   try {
     const room = await assertRoomAccess(parsed.data.roomId, userId);
+    if (room.roomOwnerId !== userId) return fail("Only the room owner can complete a recording", 403);
     const supabase = getSupabaseAdmin();
     const bucket = getBucketName();
     const chunkBuffers: Buffer[] = [];
 
     for (let index = 0; index < parsed.data.totalChunks; index += 1) {
-      const chunkPath = getChunkPath({
-        ownerId: room.roomOwnerId,
-        roomId: room.id,
-        recordingId: parsed.data.recordingId,
-        chunkIndex: index
-      });
+      const chunkPath = getChunkPath(parsed.data.recordingId, index);
 
       const { data, error } = await supabase.storage.from(bucket).download(chunkPath);
       if (error || !data) {
@@ -126,11 +113,7 @@ async function completeRecording(request: NextRequest, userId: string) {
 
     const finalBuffer = Buffer.concat(chunkBuffers);
     const finalSha256 = hashBuffer(finalBuffer);
-    const objectPath = getFinalRecordingPath({
-      ownerId: room.roomOwnerId,
-      roomId: room.id,
-      recordingId: parsed.data.recordingId
-    });
+    const objectPath = getFinalRecordingPath(room.videoId);
 
     const { error: uploadError } = await supabase.storage
       .from(bucket)
@@ -146,8 +129,27 @@ async function completeRecording(request: NextRequest, userId: string) {
 
     await prisma.video.update({
       where: { id: room.videoId },
-      data: { link }
+      data: {
+        link,
+        storagePath: objectPath,
+        mimeType: "video/webm",
+        byteSize: BigInt(finalBuffer.length),
+        sha256: finalSha256,
+        completedAt: new Date()
+      }
     });
+
+    const chunkPaths = Array.from(
+      { length: parsed.data.totalChunks },
+      (_, index) => getChunkPath(parsed.data.recordingId, index)
+    );
+    for (let offset = 0; offset < chunkPaths.length; offset += 500) {
+      const { error: cleanupError } = await supabase.storage.from(bucket).remove(chunkPaths.slice(offset, offset + 500));
+      if (cleanupError) {
+        console.error("Uploaded chunk cleanup failed", cleanupError);
+        break;
+      }
+    }
 
     return ok({
       completed: true,

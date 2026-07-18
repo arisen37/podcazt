@@ -7,7 +7,7 @@ export async function GET() {
   if (!user) return fail("Unauthorized", 401);
 
   const invites = await prisma.invite.findMany({
-    where: { invitedEmail: user.email, status: "PENDING" },
+    where: { invitedEmail: user.email, status: "PENDING", room: { closedAt: null } },
     include: {
       room: true,
       inviter: { select: { id: true, name: true, username: true, email: true } }
