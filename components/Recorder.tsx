@@ -104,6 +104,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
   const streamRef = useRef<MediaStream | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const iceServersRef = useRef<RTCIceServer[]>(defaultIceServers);
+  const endingRef = useRef(false);
   const peersRef = useRef(new Map<string, RTCPeerConnection>());
   const candidatesRef = useRef(new Map<string, RTCIceCandidateInit[]>());
   const remoteStreamsRef = useRef(new Map<string, MediaStream>());
@@ -289,6 +290,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
         socket.onmessage = async (event) => {
           try {
             const message = JSON.parse(String(event.data)) as SignalMessage;
+            if (endingRef.current && message.type !== "room-ended") return;
             if (message.type === "ready") {
               setConnectionState("Joining…");
               sendSignal({ type: "join" });
@@ -300,6 +302,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
               return;
             }
             if (message.type === "room-ended") {
+              if (endingRef.current) return;
               router.push("/ended");
               return;
             }
@@ -345,9 +348,11 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
             setError(caught instanceof Error ? `WebRTC negotiation failed: ${caught.message}` : "WebRTC negotiation failed.");
           }
         };
-        socket.onerror = () => setError("Could not connect to the realtime server.");
+        socket.onerror = () => {
+          if (!endingRef.current) setError("Could not connect to the realtime server.");
+        };
         socket.onclose = () => {
-          if (active) setConnectionState("Disconnected");
+          if (active) setConnectionState(endingRef.current ? "Ended" : "Disconnected");
         };
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Could not access camera/microphone.");
@@ -613,13 +618,13 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
     setUploading(true);
     const uploadPromise = uploadChunks().catch(() => false).finally(() => setUploading(false));
     uploadPromiseRef.current = uploadPromise;
-    await uploadPromise;
+    const saved = await uploadPromise;
+    if (saved && endingRef.current) router.push("/ended");
   }
 
   async function uploadFrame(videoId: string) {
     const canvas = compositeCanvasRef.current;
     if (!canvas) return;
-    drawCompositeFrame(canvas);
     const frame = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.86));
     if (!frame) return;
     const form = new FormData();
@@ -665,29 +670,76 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
   }
 
   async function endCall() {
+    if (endingRef.current) return;
+    endingRef.current = true;
     setEnding(true);
     setError("");
-    if (isOwner && recording) {
-      const saved = await stopRecordingAndUpload();
-      if (!saved && chunkCountRef.current > 0) {
-        setEnding(false);
-        return;
-      }
-    } else if (isOwner && uploadPromiseRef.current) {
-      const saved = await uploadPromiseRef.current;
-      if (!saved && chunkCountRef.current > 0) {
-        setError("The local recording has not uploaded yet. Retry the upload before ending the room.");
-        setEnding(false);
-        return;
-      }
-    }
+
+    const uploadPromise = isOwner && recording
+      ? stopRecordingAndUpload()
+      : isOwner ? uploadPromiseRef.current : null;
+
     sendSignal({ type: isOwner ? "end-room" : "leave" });
-    await fetch("/api/leaveCall", {
+    setConnectionState("Ended");
+    mediaFailureTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    mediaFailureTimersRef.current.clear();
+    peersRef.current.forEach((peer) => {
+      peer.onconnectionstatechange = null;
+      peer.close();
+    });
+    peersRef.current.clear();
+    candidatesRef.current.clear();
+    remoteStreamsRef.current.forEach((stream) => stream.getTracks().forEach((track) => track.stop()));
+    remoteStreamsRef.current.clear();
+    localParticipant.stream?.getTracks().forEach((track) => track.stop());
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    videoElementsRef.current.clear();
+    setParticipants([]);
+    setConnectingPeerIds([]);
+    setMediaIssues({});
+    setMicOn(false);
+    setCamOn(false);
+
+    const leaveRequest = fetch("/api/leaveCall", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ roomId })
     }).catch(() => undefined);
-    router.push("/ended");
+
+    if (!uploadPromise) {
+      await leaveRequest;
+      router.push("/ended");
+      return;
+    }
+
+    const saved = await uploadPromise;
+    await leaveRequest;
+    if (saved || chunkCountRef.current === 0) {
+      router.push("/ended");
+      return;
+    }
+
+    setError("The call ended, but the recording upload did not finish. Retry the saved upload below.");
+  }
+
+  if (ending) {
+    return (
+      <section className="card stage realtimeStage">
+        <div className="controls">
+          <span className="pill connectionPill">Call ended</span>
+          <h2>{uploading ? "Uploading your recording in the background…" : "The live call has ended."}</h2>
+          {uploading && <p className="muted">Keep this tab open until the upload completes. You can continue using another tab.</p>}
+          {uploadState && <span className="pill">{uploadState}</span>}
+          {!uploading && localChunksReady && (
+            <button className="btn btnPrimary" onClick={() => void retryLocalUpload()}>
+              Retry saved upload
+            </button>
+          )}
+          {error && <div className="alert">{error}</div>}
+        </div>
+      </section>
+    );
   }
 
   return (
