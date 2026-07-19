@@ -52,22 +52,6 @@ type VideoRtpStats = RTCStats & Partial<MediaStats> & {
   packetsLost?: number;
 };
 
-function normalizeTurnUrl(configuredUrl?: string) {
-  const value = configuredUrl?.trim();
-  if (!value) return null;
-
-  const url = /^(?:turn|turns):/i.test(value)
-    ? value
-    : `turn:${value.replace(/^\/\//, "")}`;
-
-  return /^(?:turn|turns):[^\s]+$/i.test(url) ? url : null;
-}
-
-function turnTransportUrls(turnUrl: string) {
-  if (/\?transport=/i.test(turnUrl) || /^turns:/i.test(turnUrl)) return [turnUrl];
-  return [`${turnUrl}?transport=udp`, `${turnUrl}?transport=tcp`];
-}
-
 async function sha256(blob: Blob) {
   const bytes = await blob.arrayBuffer();
   const hash = await crypto.subtle.digest("SHA-256", bytes);
@@ -102,7 +86,6 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
   const remoteStreamsRef = useRef(new Map<string, MediaStream>());
   const videoElementsRef = useRef(new Map<string, HTMLVideoElement>());
   const mediaFailureTimersRef = useRef(new Map<string, number>());
-  const turnDiagnosticsRef = useRef(new Map<string, string>());
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recorderStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -157,7 +140,6 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
     const failureTimer = mediaFailureTimersRef.current.get(peerId);
     if (failureTimer) window.clearTimeout(failureTimer);
     mediaFailureTimersRef.current.delete(peerId);
-    turnDiagnosticsRef.current.delete(peerId);
     peersRef.current.get(peerId)?.close();
     peersRef.current.delete(peerId);
     candidatesRef.current.delete(peerId);
@@ -177,51 +159,16 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
     const existing = peersRef.current.get(peerId);
     if (existing) return existing;
 
-    const configuredTurnUrl = process.env.NEXT_PUBLIC_TURN_URL;
-    const turnUrl = normalizeTurnUrl(configuredTurnUrl);
     const iceServers: RTCIceServer[] = [
       { urls: "stun:stun.l.google.com:19302" },
       { urls: "stun:stun1.l.google.com:19302" }
     ];
-    if (turnUrl) {
-      iceServers.push({
-        urls: turnTransportUrls(turnUrl),
-        username: process.env.NEXT_PUBLIC_TURN_USERNAME,
-        credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL
-      });
-    }
-    if (configuredTurnUrl && !turnUrl) {
-      setMediaIssues((current) => ({
-        ...current,
-        [peerId]: "The configured TURN relay URL is invalid. Check NEXT_PUBLIC_TURN_URL."
-      }));
-    }
     const peer = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 4 });
-    let relayCandidateFound = false;
     setConnectingPeerIds((current) => current.includes(peerId) ? current : [...current, peerId]);
     streamRef.current?.getTracks().forEach((track) => peer.addTrack(track, streamRef.current as MediaStream));
     peer.onicecandidate = (event) => {
       if (event.candidate) {
-        if (event.candidate.type === "relay" || event.candidate.candidate.includes(" typ relay ")) {
-          relayCandidateFound = true;
-        }
         sendSignal({ type: "ice-candidate", targetPeerId: peerId, payload: event.candidate });
-        return;
-      }
-
-      if (turnUrl && !relayCandidateFound && peer.connectionState !== "connected") {
-        turnDiagnosticsRef.current.set(
-          peerId,
-          "The TURN server returned no relay candidate. Verify its username and credential in Vercel."
-        );
-      }
-    };
-    peer.onicecandidateerror = (event) => {
-      if (event.url.startsWith("turn:") || event.url.startsWith("turns:")) {
-        turnDiagnosticsRef.current.set(
-          peerId,
-          `TURN allocation failed (${event.errorCode}): ${event.errorText || "check the relay credentials"}`
-        );
       }
     };
     peer.ontrack = (event) => {
@@ -239,7 +186,6 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
         const failureTimer = mediaFailureTimersRef.current.get(peerId);
         if (failureTimer) window.clearTimeout(failureTimer);
         mediaFailureTimersRef.current.delete(peerId);
-        turnDiagnosticsRef.current.delete(peerId);
         setConnectingPeerIds((current) => current.filter((id) => id !== peerId));
         setMediaIssues((current) => {
           if (!(peerId in current)) return current;
@@ -256,8 +202,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
           setConnectingPeerIds((current) => current.filter((id) => id !== peerId));
           setMediaIssues((current) => ({
             ...current,
-            [peerId]: turnDiagnosticsRef.current.get(peerId)
-              ?? "Could not establish a media path to a participant. Check the TURN relay configuration."
+            [peerId]: "Could not establish a direct media path to this participant. Their network may block peer-to-peer WebRTC."
           }));
         }, 15_000);
         mediaFailureTimersRef.current.set(peerId, timer);
@@ -278,7 +223,6 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
     const peerConnections = peersRef.current;
     const remoteStreams = remoteStreamsRef.current;
     const mediaFailureTimers = mediaFailureTimersRef.current;
-    const turnDiagnostics = turnDiagnosticsRef.current;
 
     async function connect() {
       try {
@@ -370,7 +314,6 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
       socket?.close(1000, "Page closed");
       mediaFailureTimers.forEach((timer) => window.clearTimeout(timer));
       mediaFailureTimers.clear();
-      turnDiagnostics.clear();
       peerConnections.forEach((peer) => peer.close());
       peerConnections.clear();
       remoteStreams.clear();

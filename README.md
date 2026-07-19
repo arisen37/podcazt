@@ -38,7 +38,7 @@ WebRTC carries the audio and video. It is designed for low-latency media and can
 
 Before two browsers can create that connection, they must exchange small setup messages. These messages contain an offer, an answer, and ICE candidates. An ICE candidate describes a network path that WebRTC can try. The WebSocket service routes these setup messages to the correct peer. It does not carry the video itself.
 
-STUN helps a browser discover its public network address. TURN relays media when a direct route is blocked by a firewall or strict network. TURN is important for reliable production calls.
+STUN helps a browser discover its public network address. This project uses direct peer-to-peer media paths and does not provide a relay fallback, so calls can fail on restrictive firewalls or symmetric NATs.
 
 ## Runtime services
 
@@ -228,7 +228,7 @@ The project currently uses Supabase public URLs. A private production library ca
 - Hash mismatches stop the upload.
 - Email failure does not remove the database invite.
 - Realtime delivery can fall back from Redis to the protected signaling endpoint.
-- A TURN server provides a media fallback when direct WebRTC paths fail.
+- Failed direct WebRTC paths are reported to participants.
 
 ## Source file map
 
@@ -236,7 +236,7 @@ The project currently uses Supabase public URLs. A private production library ca
 
 | File | Responsibility |
 | --- | --- |
-| `.env.example` | Lists application, database, storage, email, Redis, signaling, TURN, and JWT key-rotation settings. |
+| `.env.example` | Lists application, database, storage, email, Redis, signaling, and JWT key-rotation settings. |
 | `README.md` | Describes system architecture, data flow, security, deployment, and source ownership. |
 | `package.json` | Defines dependencies and commands for Next.js, Prisma, linting, type checking, and the signaling service. |
 | `package-lock.json` | Locks exact dependency versions for repeatable installs. |
@@ -406,10 +406,6 @@ Local signaling defaults to `ws://localhost:4000`. Camera access works on localh
 - `SIGNALING_PORT`: signaling process port.
 - `SIGNALING_INTERNAL_URL`: private HTTP address used for direct invite event delivery.
 - `SIGNALING_INTERNAL_SECRET`: bearer secret protecting internal event delivery.
-- `NEXT_PUBLIC_TURN_URL`: TURN server URL.
-- `NEXT_PUBLIC_TURN_USERNAME`: temporary TURN username.
-- `NEXT_PUBLIC_TURN_CREDENTIAL`: temporary TURN credential.
-
 ### Storage
 
 - `NEXT_PUBLIC_SUPABASE_URL`: Supabase project URL.
@@ -448,6 +444,6 @@ Local signaling defaults to `ws://localhost:4000`. Camera access works on localh
 
 Run the Next.js process behind HTTPS. Run the signaling process on infrastructure that supports persistent WebSocket connections. Expose it through `wss://` and keep its internal event endpoint private.
 
-Use PostgreSQL connection pooling for serverless Next.js instances. Set `REDIS_URL` on the signaling service when more than one signaling instance can run; Redis relays peer presence, SDP, ICE candidates, room endings, and notifications between instances. Use a TURN service with temporary credentials. Keep Supabase service keys, Gmail credentials, database URLs, JWT secrets, and internal signaling secrets on the server.
+Use PostgreSQL connection pooling for serverless Next.js instances. Set `REDIS_URL` on the signaling service when more than one signaling instance can run; Redis relays peer presence, SDP, ICE candidates, room endings, and notifications between instances. Keep Supabase service keys, Gmail credentials, database URLs, JWT secrets, and internal signaling secrets on the server.
 
-The Next.js process can scale horizontally because sessions are stateless and uploaded objects live outside the process. The signaling process can also scale horizontally when Redis distributes notifications. WebRTC media stays between peers or passes through TURN, so the application servers do not become the main video bandwidth path.
+The Next.js process can scale horizontally because sessions are stateless and uploaded objects live outside the process. The signaling process can also scale horizontally when Redis distributes notifications. WebRTC media stays between peers, so the application servers do not become the main video bandwidth path.
