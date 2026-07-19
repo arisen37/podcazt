@@ -52,6 +52,28 @@ type VideoRtpStats = RTCStats & Partial<MediaStats> & {
   packetsLost?: number;
 };
 
+const defaultIceServers: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" }
+];
+
+function serverUrls(server: RTCIceServer) {
+  return Array.isArray(server.urls) ? server.urls : [server.urls];
+}
+
+function isTurnServer(server: RTCIceServer) {
+  return serverUrls(server).some((url) => /^turns?:/i.test(url));
+}
+
+async function fetchIceServers() {
+  const response = await fetch("/api/turn-credentials", { cache: "no-store" });
+  const body = (await response.json().catch(() => ({}))) as { iceServers?: RTCIceServer[]; error?: string };
+  if (!response.ok || !Array.isArray(body.iceServers)) {
+    throw new Error(body.error || "TURN credentials are unavailable");
+  }
+  return body.iceServers;
+}
+
 async function sha256(blob: Blob) {
   const bytes = await blob.arrayBuffer();
   const hash = await crypto.subtle.digest("SHA-256", bytes);
@@ -81,6 +103,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
   const router = useRouter();
   const streamRef = useRef<MediaStream | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const iceServersRef = useRef<RTCIceServer[]>(defaultIceServers);
   const peersRef = useRef(new Map<string, RTCPeerConnection>());
   const candidatesRef = useRef(new Map<string, RTCIceCandidateInit[]>());
   const remoteStreamsRef = useRef(new Map<string, MediaStream>());
@@ -159,17 +182,26 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
     const existing = peersRef.current.get(peerId);
     if (existing) return existing;
 
-    const iceServers: RTCIceServer[] = [
-      { urls: "stun:stun.l.google.com:19302" },
-      { urls: "stun:stun1.l.google.com:19302" }
-    ];
+    const iceServers = iceServersRef.current;
+    const turnConfigured = iceServers.some(isTurnServer);
     const peer = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 4 });
+    let relayCandidateFound = false;
+    let turnFailure: string | null = null;
     setConnectingPeerIds((current) => current.includes(peerId) ? current : [...current, peerId]);
     streamRef.current?.getTracks().forEach((track) => peer.addTrack(track, streamRef.current as MediaStream));
     peer.onicecandidate = (event) => {
       if (event.candidate) {
+        if (event.candidate.type === "relay" || event.candidate.candidate.includes(" typ relay ")) {
+          relayCandidateFound = true;
+          turnFailure = null;
+        }
         sendSignal({ type: "ice-candidate", targetPeerId: peerId, payload: event.candidate });
       }
+    };
+    peer.onicecandidateerror = (event) => {
+      if (!event.url.toLowerCase().startsWith("turn")) return;
+      const transport = new URLSearchParams(event.url.split("?")[1] ?? "").get("transport");
+      turnFailure = `TURN ${transport ? `${transport.toUpperCase()} ` : ""}allocation failed (${event.errorCode}): ${event.errorText || "check the server and credentials"}`;
     };
     peer.ontrack = (event) => {
       const stream = event.streams[0] ?? remoteStreamsRef.current.get(peerId) ?? new MediaStream();
@@ -202,7 +234,9 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
           setConnectingPeerIds((current) => current.filter((id) => id !== peerId));
           setMediaIssues((current) => ({
             ...current,
-            [peerId]: "Could not establish a direct media path to this participant. Their network may block peer-to-peer WebRTC."
+            [peerId]: turnConfigured && !relayCandidateFound
+              ? turnFailure ?? "The TURN server did not provide a relay candidate. Check its credentials and network access."
+              : "Could not establish a media path to this participant. Check both participants' network access."
           }));
         }, 15_000);
         mediaFailureTimersRef.current.set(peerId, timer);
@@ -234,6 +268,19 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
         }
         streamRef.current = stream;
         setLocalParticipant((participant) => ({ ...participant, stream }));
+
+        try {
+          const turnIceServers = await fetchIceServers();
+          if (!active) return;
+          iceServersRef.current = [...defaultIceServers, ...turnIceServers];
+        } catch (caught) {
+          if (!active) return;
+          iceServersRef.current = defaultIceServers;
+          setError(caught instanceof Error
+            ? `${caught.message}. Calls will use direct peer-to-peer paths only.`
+            : "TURN credentials are unavailable. Calls will use direct peer-to-peer paths only."
+          );
+        }
 
         const token = await getRealtimeToken();
         socket = new WebSocket(getSignalingUrl(token));
