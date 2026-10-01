@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import bcrypt  from 'bcryptjs'
 import { createUserSchema } from "@/lib/zodSchemas";
+import { db } from "@/prisma/db";
 
 export default async function GET(req : NextRequest){
 
@@ -22,8 +23,20 @@ export default async function GET(req : NextRequest){
     try{
         const saltRounds = 5;
         const hashed_password = await bcrypt.hash(payload.password , saltRounds);
+        const user = await db.user.create({
+            data : {
+                email : payload.email,
+                password : hashed_password,
+                name : payload.username
+            }
+        });
+
+        Response.json({
+            "message" : "succesfully registered the user",
+            "status" : 200
+        })
     }catch(error){
-        console.log("Error while hashing the password : " , error);
+        console.log("Error while registering the user : " , error);
     };
 
 }
