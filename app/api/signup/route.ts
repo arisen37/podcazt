@@ -1,9 +1,9 @@
-import { NextRequest } from "next/server";
 import bcrypt  from 'bcryptjs'
 import { createUserSchema } from "@/lib/zodSchemas";
 import { db } from "@/prisma/db";
+import { NextRequest } from 'next/server';
 
-export async function POST(req : NextRequest){
+export async function POST(req: NextRequest) {
 
     const payload : {
         email : string,
@@ -37,6 +37,10 @@ export async function POST(req : NextRequest){
         })
     }catch(error){
         console.log("Error while registering the user : " , error);
+        return Response.json({
+            "error" : "Error while registering the user",
+            "status" : 500
+        });
     };
 
 }
