@@ -4,7 +4,7 @@ import { db } from "@/prisma/db";
 import bcrypt from "bcryptjs";
 
 
-export default async function GET(req : AuthenticatedRequest){
+export async function GET(req : AuthenticatedRequest){
     const payload = await req.json()
 
     const isValidPayload = loginSchema.safeParse(payload);
