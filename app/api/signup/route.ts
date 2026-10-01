@@ -3,7 +3,7 @@ import bcrypt  from 'bcryptjs'
 import { createUserSchema } from "@/lib/zodSchemas";
 import { db } from "@/prisma/db";
 
-export default async function GET(req : NextRequest){
+export default async function POST(req : NextRequest){
 
     const payload : {
         email : string,
@@ -31,7 +31,7 @@ export default async function GET(req : NextRequest){
             }
         });
 
-        Response.json({
+        return Response.json({
             "message" : "succesfully registered the user",
             "status" : 200
         })
