@@ -109,8 +109,9 @@ sudo nano /opt/podcazt/deploy/lightsail/config.env
 sudo bash /opt/podcazt/deploy/lightsail/setup-config.sh --write
 ```
 
-Set the two domains, email for certificate expiry notices, public/private IPs,
-bucket name, AWS region and restricted access key. Gmail credentials are
+Set the two domains, public/private IPs, bucket name, AWS region and restricted
+access key. ACME_EMAIL is optional; leave it empty to register without email.
+Gmail credentials are
 optional; without them invites work in the app but invitation email is skipped.
 Use a Gmail App Password, not the account password.
 

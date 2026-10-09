@@ -36,7 +36,7 @@ export function renderConfiguration(directory: string, write = false) {
     if (values.APP_DOMAIN === values.TURN_DOMAIN) throw new Error("Use a separate TURN subdomain");
   }
   values.TLS_SERVER_NAMES = tlsMode === "ip" ? values.PUBLIC_IP : `${values.APP_DOMAIN} ${values.TURN_DOMAIN}`;
-  if ((values.ACME_EMAIL || tlsMode === "domain") && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.ACME_EMAIL ?? "")) throw new Error("Set ACME_EMAIL");
+  if (values.ACME_EMAIL && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.ACME_EMAIL)) throw new Error("Set a valid ACME_EMAIL or leave it empty");
   if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(values.S3_BUCKET ?? "")) throw new Error("Set S3_BUCKET");
   if (!/^[a-z]{2}-[a-z]+-\d$/.test(values.AWS_REGION ?? "")) throw new Error("Set AWS_REGION");
   const authMode = values.AWS_AUTH_MODE || "static";

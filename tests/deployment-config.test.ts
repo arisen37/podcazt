@@ -63,6 +63,17 @@ test("EC2 role config omits static credentials and rejects conflicting keys", (t
   assert.throws(() => renderConfiguration(directory, true), /Leave AWS credential values empty/);
 });
 
+test("domain TLS allows no email and validates a supplied email", (t) => {
+  const directory = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, "config.env");
+  writeFileSync(path, readFileSync(path, "utf8").replace("ACME_EMAIL=you@example.com", "ACME_EMAIL="));
+  renderConfiguration(directory, true);
+  assert.match(readFileSync(join(directory, "runtime.env"), "utf8"), /NEXT_PUBLIC_APP_URL='https:\/\/studio\.podcazt\.test'/);
+  writeFileSync(path, readFileSync(path, "utf8").replace("ACME_EMAIL=", "ACME_EMAIL=invalid"));
+  assert.throws(() => renderConfiguration(directory, true), /valid ACME_EMAIL/);
+});
+
 test("IP TLS renders matching HTTPS, TURN and CORS hosts without an email", (t) => {
   const directory = fixture();
   t.after(() => rmSync(directory, { recursive: true, force: true }));

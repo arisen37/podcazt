@@ -17,7 +17,17 @@ if [[ "$tls_mode" == ip ]]; then
     exit 1
   fi
 fi
-install -m 0644 generated/nginx-http.conf /etc/nginx/sites-available/podcazt
+site_config=/etc/nginx/sites-available/podcazt
+if [[ -f "$site_config" ]]; then
+  # Existing Podcazt sites already serve HTTP-01, including for new hostnames
+  # on this dedicated server. Keep their HTTPS listener until issuance succeeds.
+  if ! grep -Fq 'location ^~ /.well-known/acme-challenge/ { root /var/www/certbot; }' "$site_config"; then
+    echo 'Existing Nginx site must serve /var/www/certbot for HTTP-01 validation.' >&2
+    exit 1
+  fi
+else
+  install -m 0644 generated/nginx-http.conf "$site_config"
+fi
 ln -sfn /etc/nginx/sites-available/podcazt /etc/nginx/sites-enabled/podcazt
 if [[ -L /etc/nginx/sites-enabled/default ]]; then unlink /etc/nginx/sites-enabled/default; fi
 nginx -t

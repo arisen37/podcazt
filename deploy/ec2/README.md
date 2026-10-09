@@ -189,8 +189,9 @@ Use `https://YOUR_PUBLIC_IPV4` as the S3 CORS origin and app URL. Nginx serves
 HTTPS on 443 and Coturn serves TURN TLS on 5349 with that IP certificate.
 
 When adding DNS later, switch `TLS_MODE=domain`, set the two actual domains
-and ACME email, update DNS and S3 CORS, then regenerate configuration and rerun
-`deploy.sh` and `enable-tls.sh`. Keep the IP stable until that transition.
+and optionally ACME email, update DNS and S3 CORS, then regenerate configuration
+and run `enable-tls.sh` followed by `deploy.sh`. Existing HTTPS stays available
+while Certbot obtains the new certificate. Keep the IP stable until that transition.
 
 ### Domain deployment
 
@@ -236,6 +237,7 @@ AWS_SESSION_TOKEN=
 
 Leave PostgreSQL/session/internal/TURN secret values blank on the first setup;
 the generator creates and saves them. Preserve them on subsequent deployments.
+ACME_EMAIL may be empty to register with Certbot without an email address.
 Email credentials are optional; Gmail requires an App Password.
 
 ```bash
