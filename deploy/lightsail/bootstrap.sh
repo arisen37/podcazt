@@ -7,13 +7,13 @@ if [[ "$ID" != ubuntu || "$VERSION_ID" != 24.04 ]]; then
 fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y docker.io docker-compose-v2 nginx certbot coturn ufw
+apt-get install -y docker.io docker-buildx docker-compose-v2 nginx certbot coturn ufw
 systemctl enable --now docker nginx
 # Do not expose an unconfigured TURN service before installing authentication.
 systemctl disable --now coturn
 install -d -m 0755 /opt/podcazt /var/www/certbot /etc/coturn/certs
 install -d -m 0700 /var/backups/podcazt
-# Small instances need headroom; builds still happen on the developer's machine.
+# Small instances need headroom; bootstrap before any on-host image build.
 if ! swapon --show=NAME --noheadings | grep -q .; then
   if [[ ! -e /swapfile ]]; then
     fallocate -l 1G /swapfile
