@@ -9,9 +9,10 @@ type RecordingStudioProps = {
   roomKind: "PODCAST" | "SELF_RECORD";
   isOwner: boolean;
   currentUser: { name: string; username: string };
+  storageProvider?: "s3" | "supabase";
 };
 
-export function RecordingStudio({ roomId, roomKind, isOwner, currentUser }: RecordingStudioProps) {
+export function RecordingStudio({ roomId, roomKind, isOwner, currentUser, storageProvider }: RecordingStudioProps) {
   const [liveParticipants, setLiveParticipants] = useState<LiveParticipant[]>([{
     peerId: "local",
     name: currentUser.name || currentUser.username,
@@ -24,6 +25,7 @@ export function RecordingStudio({ roomId, roomKind, isOwner, currentUser }: Reco
         roomId={roomId}
         isOwner={isOwner}
         currentUser={currentUser}
+        storageProvider={storageProvider}
         onParticipantsChange={setLiveParticipants}
       />
       <aside className="card sidePanel">

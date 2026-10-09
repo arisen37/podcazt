@@ -1,0 +1,1 @@
+{"Rules":[{"ID":"abort-unfinished-recordings","Status":"Enabled","Filter":{"Prefix":"recordings/"},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":7}},{"ID":"expire-database-backups","Status":"Enabled","Filter":{"Prefix":"backups/"},"Expiration":{"Days":14}}]}

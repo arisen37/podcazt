@@ -6,12 +6,14 @@ import { prisma } from "../lib/prisma";
 import { verifyRealtimeToken } from "../lib/realtime-token";
 import type { InviteRealtimeEvent } from "../lib/realtime-events";
 import type { SessionUser } from "../lib/types";
+import { ReliableSignaling, type ReliableMessage } from "../lib/reliable-signaling";
 
 type ClientMessage = {
   type: "join" | "offer" | "answer" | "ice-candidate" | "leave" | "end-room";
   roomId?: string;
   targetPeerId?: string;
   payload?: unknown;
+  messageId?: string;
 };
 
 type SignalingEvent =
@@ -52,10 +54,11 @@ const redisUrl = process.env.REDIS_URL;
 const app = express();
 app.use(express.json({ limit: "32kb" }));
 const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 const rooms = new Map<string, Map<string, Peer>>();
 const notificationSockets = new Map<string, Set<WebSocket>>();
 const authenticatedUsers = new WeakMap<WebSocket, SessionUser>();
+const reliableSockets = new WeakMap<WebSocket, ReliableSignaling>();
 const publisher = redisUrl ? new Redis(redisUrl) : null;
 const subscriber = redisUrl ? new Redis(redisUrl) : null;
 
@@ -64,7 +67,9 @@ app.get("/health", (_request, response) => {
 });
 
 function send(socket: WebSocket, message: unknown) {
-  if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+  const reliable = reliableSockets.get(socket);
+  if (reliable) reliable.send(message as ReliableMessage);
+  else if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
 }
 
 function pushNotification(email: string, event: InviteRealtimeEvent) {
@@ -120,7 +125,7 @@ function deliverSignalingEvent(event: SignalingEvent) {
 }
 
 async function publishSignalingEvent(event: SignalingEvent) {
-  if (!publisher) {
+  if (!publisher || process.env.SINGLE_INSTANCE_SIGNALING === "true") {
     deliverSignalingEvent(event);
     return;
   }
@@ -254,6 +259,12 @@ wss.on("connection", (socket: WebSocket) => {
     alive: true
   };
   let currentRoomId: string | null = null;
+  const reliable = new ReliableSignaling(
+    (message) => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message)); },
+    (message) => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "error", message })); }
+  );
+  reliableSockets.set(socket, reliable);
+  const retryTimer = setInterval(() => reliable.tick(), 250);
   let currentIsOwner = false;
   const email = authenticatedUser.email.toLowerCase();
   const userSockets = notificationSockets.get(email) ?? new Set<WebSocket>();
@@ -265,10 +276,13 @@ wss.on("connection", (socket: WebSocket) => {
     peer.alive = true;
   });
 
-  socket.on("message", async (raw: RawData) => {
+  let processing = Promise.resolve();
+  socket.on("message", (raw: RawData) => {
+    processing = processing.then(async () => {
     try {
       if (raw.toString().length > 1_000_000) return;
       const message = JSON.parse(raw.toString()) as ClientMessage;
+      if (reliable.receive(message as ReliableMessage)) return;
 
       if (message.type === "join" && typeof message.roomId === "string" && !currentRoomId) {
         const room = await joinRoom(peer, message.roomId);
@@ -280,6 +294,7 @@ wss.on("connection", (socket: WebSocket) => {
       if (!currentRoomId || message.roomId !== currentRoomId) return;
       if (["offer", "answer", "ice-candidate"].includes(message.type)) {
         await routeSignal(currentRoomId, peer, message);
+        reliable.processed(message as ReliableMessage);
       }
       if (message.type === "end-room" && currentIsOwner) {
         await publishSignalingEvent({ type: "room-ended", roomId: currentRoomId });
@@ -289,9 +304,12 @@ wss.on("connection", (socket: WebSocket) => {
     } catch (error) {
       console.error("Invalid signaling message", error);
     }
+    });
   });
 
   socket.on("close", () => {
+    clearInterval(retryTimer);
+    reliable.clear();
     userSockets.delete(socket);
     if (userSockets.size === 0) notificationSockets.delete(email);
     if (!currentRoomId) return;

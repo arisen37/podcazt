@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { enforceRateLimit, fail, ok } from "@/lib/api";
 import { getCurrentUser } from "@/lib/auth";
 import { getOptionalEnv } from "@/lib/env";
+import { createTurnCredentials } from "@/lib/turn";
 
 function sanitizeIceServers(value: unknown): RTCIceServer[] {
   if (!Array.isArray(value)) return [];
@@ -28,6 +29,11 @@ export async function GET(request: NextRequest) {
 
   const limited = await enforceRateLimit(request, { key: "turn-credentials", limit: 30, windowMs: 60_000 });
   if (limited) return limited;
+
+  const selfHosted = createTurnCredentials(user.id);
+  if (selfHosted) {
+    return ok(selfHosted, { headers: { "Cache-Control": "private, no-store" } });
+  }
 
   const appName = getOptionalEnv("METERED_TURN_APP_NAME");
   const apiKey = getOptionalEnv("METERED_TURN_API_KEY");

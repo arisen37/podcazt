@@ -1,5 +1,18 @@
 # Podcazt
 
+For EC2 in Mumbai, follow [the EC2 deployment guide](deploy/ec2/README.md).
+It reuses the production Ubuntu scripts and supports S3 access through an EC2
+instance role, with Nginx, Certbot, and Coturn on the host.
+
+For the AWS deployment on a single Lightsail instance in Mumbai, see
+[the Lightsail deployment guide](deploy/lightsail/README.md). It includes Docker
+Compose, Nginx, Certbot renewal, self-hosted Coturn, private S3 recording storage,
+PostgreSQL backups, and resumable uploads with selective retries. The sections
+below also describe the original Supabase/Metered development configuration.
+
+To test the deployment locally with Docker, Nginx, trusted local HTTPS, and
+Coturn, follow [the local Docker testing guide](deploy/local/README.md).
+
 Podcazt is a browser recording platform for solo sessions and remote podcasts. It combines a Next.js web application, peer-to-peer WebRTC calls, an authenticated WebSocket signaling service, PostgreSQL, Supabase Storage, Redis, and email delivery.
 
 The room owner can invite a participant, start a live call, record the visible participant grid, and upload the final recording. Participants can control their own camera and microphone, but server-side checks prevent them from recording or managing the room.

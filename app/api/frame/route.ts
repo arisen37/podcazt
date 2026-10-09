@@ -6,6 +6,8 @@ import { prisma } from "@/lib/prisma";
 import { assertRoomAccess } from "@/lib/rooms";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import { FrameUploadSchema } from "@/lib/validation";
+import { PutObjectCommand } from "@aws-sdk/client-s3";
+import { getS3, getS3Bucket, mediaUrl, usesS3 } from "@/lib/s3";
 
 export const runtime = "nodejs";
 
@@ -35,6 +37,18 @@ export async function POST(request: NextRequest) {
 
     const buffer = Buffer.from(await file.arrayBuffer());
     if (buffer.length === 0) return fail("Frame image is empty", 422);
+    if (buffer.length > 5 * 1024 * 1024) return fail("Preview is too large", 413);
+
+    if (usesS3()) {
+      await getS3().send(new PutObjectCommand({
+        Bucket: getS3Bucket(), Key: `recordings/${parsed.data.videoId}/preview.jpg`,
+        Body: buffer, ContentType: "image/jpeg"
+      }));
+      const frame = await prisma.frame.create({ data: {
+        videoId: parsed.data.videoId, link: mediaUrl(parsed.data.videoId, true)
+      } });
+      return ok({ frame });
+    }
 
     const bucket = getEnv("SUPABASE_VIDEOS_BUCKET", "videos");
     const objectPath = `recordings/${parsed.data.videoId}/preview.jpg`;

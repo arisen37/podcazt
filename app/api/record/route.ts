@@ -7,10 +7,12 @@ import { prisma } from "@/lib/prisma";
 import { assertRoomAccess } from "@/lib/rooms";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import { ChunkSchema, CompleteRecordingSchema } from "@/lib/validation";
+import { usesS3 } from "@/lib/s3";
 
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
+  if (usesS3()) return fail("Use the direct S3 upload endpoint", 409);
   const limited = await enforceRateLimit(request, { key: "record", limit: 240, windowMs: 60_000 });
   if (limited) return limited;
 

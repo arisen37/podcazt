@@ -1,0 +1,1 @@
+{"CORSRules":[{"AllowedOrigins":["https://@@APP_DOMAIN@@"],"AllowedMethods":["PUT","GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["ETag","x-amz-checksum-sha256"],"MaxAgeSeconds":3600}]}

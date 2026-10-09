@@ -63,7 +63,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
           </div>
         </div>
         {children}
-        <Analytics />
+        {process.env.VERCEL === "1" && <Analytics />}
       </body>
     </html>
   );

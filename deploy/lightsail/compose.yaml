@@ -1,0 +1,75 @@
+name: podcazt
+
+x-app: &app
+  image: podcazt:latest
+  env_file: runtime.env
+  restart: unless-stopped
+  init: true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  security_opt:
+    - no-new-privileges:true
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  web:
+    <<: *app
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      NODE_OPTIONS: --max-old-space-size=384
+    mem_limit: 640m
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+  signaling:
+    <<: *app
+    command: [node, --import, tsx, server/signaling.ts]
+    ports:
+      - "127.0.0.1:4000:4000"
+    environment:
+      NODE_OPTIONS: --max-old-space-size=128
+    mem_limit: 256m
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+  postgres:
+    image: ${DOCKER_LIBRARY_PREFIX:-}postgres:16-bookworm
+    restart: unless-stopped
+    env_file: runtime.env
+    command: [postgres, -c, shared_buffers=64MB, -c, max_connections=40]
+    mem_limit: 384m
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U podcazt -d podcazt"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    logging:
+      options: { max-size: "10m", max-file: "3" }
+  redis:
+    image: ${DOCKER_LIBRARY_PREFIX:-}redis:7-bookworm
+    restart: unless-stopped
+    command: [redis-server, --maxmemory, 64mb, --maxmemory-policy, volatile-lru, --save, "", --appendonly, "no"]
+    mem_limit: 96m
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    logging:
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  postgres:

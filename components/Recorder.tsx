@@ -4,7 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getApiErrorMessage } from "@/lib/client-error";
 import { getRealtimeToken, getSignalingUrl } from "@/lib/realtime-client";
-import { clearRecordingChunks, getRecordingChunks, saveRecordingChunk } from "@/lib/recording-store";
+import { clearRecordingChunks, getRecordingChunks, getRecoverableRecordingId, saveRecordingChunk } from "@/lib/recording-store";
+import { uploadRecordingToS3 } from "@/lib/s3-upload-client";
+import { ReliableSignaling, type ReliableMessage } from "@/lib/reliable-signaling";
 
 type Participant = {
   peerId: string;
@@ -21,12 +23,15 @@ type SignalMessage = {
   user?: { name: string; username: string };
   payload?: RTCSessionDescriptionInit | RTCIceCandidateInit;
   message?: string;
+  messageId?: string;
+  ackId?: string;
 };
 
 type RecorderProps = {
   roomId: string;
   isOwner: boolean;
   currentUser: { name: string; username: string };
+  storageProvider?: "s3" | "supabase";
   onParticipantsChange?: (participants: LiveParticipant[]) => void;
 };
 
@@ -99,7 +104,9 @@ function VideoTile({ participant, muted, attach }: {
   );
 }
 
-export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }: RecorderProps) {
+export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange, storageProvider = "supabase" }: RecorderProps) {
+  const reliableRef = useRef<ReliableSignaling | null>(null);
+  const localPeerIdRef = useRef<string>("");
   const router = useRouter();
   const streamRef = useRef<MediaStream | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -148,6 +155,18 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
   });
 
   useEffect(() => {
+    if (!isOwner) return;
+    let active = true;
+    void getRecoverableRecordingId(roomId).then((recordingId) => {
+      if (!active || !recordingId || recorderRef.current) return;
+      recordingIdRef.current = recordingId;
+      setLocalChunksReady(true);
+      setUploadState("A local recording is ready to retry.");
+    }).catch(() => setError("Could not check local recording recovery storage."));
+    return () => { active = false; };
+  }, [roomId, isOwner]);
+
+  useEffect(() => {
     onParticipantsChange?.([localParticipant, ...participants].map(({ peerId, name, username }) => ({
       peerId,
       name,
@@ -155,9 +174,9 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
     })));
   }, [localParticipant, onParticipantsChange, participants]);
 
-  const sendSignal = useCallback((message: object) => {
+  const sendSignal = useCallback((message: ReliableMessage) => {
     const socket = socketRef.current;
-    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ ...message, roomId }));
+    if (socket?.readyState === WebSocket.OPEN) reliableRef.current?.send({ ...message, roomId });
   }, [roomId]);
 
   const removePeer = useCallback((peerId: string) => {
@@ -186,6 +205,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
     const iceServers = iceServersRef.current;
     const turnConfigured = iceServers.some(isTurnServer);
     const peer = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 4 });
+    let restartAttempts = 0;
     let relayCandidateFound = false;
     let turnFailure: string | null = null;
     setConnectingPeerIds((current) => current.includes(peerId) ? current : [...current, peerId]);
@@ -216,6 +236,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
     };
     peer.onconnectionstatechange = () => {
       if (peer.connectionState === "connected") {
+        restartAttempts = 0;
         const failureTimer = mediaFailureTimersRef.current.get(peerId);
         if (failureTimer) window.clearTimeout(failureTimer);
         mediaFailureTimersRef.current.delete(peerId);
@@ -232,6 +253,15 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
         const timer = window.setTimeout(() => {
           mediaFailureTimersRef.current.delete(peerId);
           if (!["failed", "disconnected"].includes(peer.connectionState)) return;
+          // Exactly one side initiates recovery to avoid simultaneous restart offers.
+          if (localPeerIdRef.current < peerId && restartAttempts < 2 && socketRef.current?.readyState === WebSocket.OPEN) {
+            restartAttempts++;
+            void peer.createOffer({ iceRestart: true }).then(async (offer) => {
+              if (peer.signalingState !== "stable") return;
+              await peer.setLocalDescription(offer);
+              sendSignal({ type: "offer", targetPeerId: peerId, payload: offer });
+            }).catch(() => setError("Call recovery failed. Rejoin the room."));
+          }
           setConnectingPeerIds((current) => current.filter((id) => id !== peerId));
           setMediaIssues((current) => ({
             ...current,
@@ -255,6 +285,9 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
   useEffect(() => {
     let active = true;
     let socket: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let retryTimer: ReturnType<typeof setInterval> | undefined;
+    let reconnectAttempts = 0;
     const peerConnections = peersRef.current;
     const remoteStreams = remoteStreamsRef.current;
     const mediaFailureTimers = mediaFailureTimersRef.current;
@@ -262,7 +295,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
     async function connect() {
       try {
         if (!navigator.mediaDevices?.getUserMedia) throw new Error("Camera access requires HTTPS or localhost");
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        const stream = streamRef.current ?? await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
         if (!active) {
           stream.getTracks().forEach((track) => track.stop());
           return;
@@ -284,14 +317,28 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
         }
 
         const token = await getRealtimeToken();
+        if (!active) return;
         socket = new WebSocket(getSignalingUrl(token));
+        const currentSocket = socket;
+        const reliable = new ReliableSignaling(
+          (message) => { if (currentSocket.readyState === WebSocket.OPEN) currentSocket.send(JSON.stringify(message)); },
+          setError
+        );
+        reliableRef.current = reliable;
+        if (retryTimer) clearInterval(retryTimer);
+        retryTimer = setInterval(() => reliable.tick(), 250);
         socketRef.current = socket;
         socket.onopen = () => setConnectionState("Authenticating…");
-        socket.onmessage = async (event) => {
+        let processing = Promise.resolve();
+        socket.onmessage = (event) => {
+          processing = processing.then(async () => {
           try {
             const message = JSON.parse(String(event.data)) as SignalMessage;
+            if (!active || currentSocket !== socketRef.current) return;
+            if (reliable.receive(message as ReliableMessage)) return;
             if (endingRef.current && message.type !== "room-ended") return;
             if (message.type === "ready") {
+              localPeerIdRef.current = message.peerId ?? "";
               setConnectionState("Joining…");
               sendSignal({ type: "join" });
               return;
@@ -307,6 +354,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
               return;
             }
             if (message.type === "peers") {
+              reconnectAttempts = 0;
               setConnectionState("Live");
               for (const remote of message.peers ?? []) {
                 createPeer(remote.peerId, remote.user);
@@ -344,25 +392,40 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
               for (const candidate of candidatesRef.current.get(message.peerId) ?? []) await peer.addIceCandidate(candidate);
               candidatesRef.current.delete(message.peerId);
             }
+            reliable.processed(message as ReliableMessage);
           } catch (caught) {
             setError(caught instanceof Error ? `WebRTC negotiation failed: ${caught.message}` : "WebRTC negotiation failed.");
           }
+          });
         };
         socket.onerror = () => {
           if (!endingRef.current) setError("Could not connect to the realtime server.");
         };
-        socket.onclose = () => {
+        socket.onclose = (event) => {
+          reliable.clear();
+          if (retryTimer) clearInterval(retryTimer);
           if (active) setConnectionState(endingRef.current ? "Ended" : "Disconnected");
+          if (active && !endingRef.current && event.code !== 1000 && reconnectAttempts < 8) {
+            for (const peerId of peersRef.current.keys()) removePeer(peerId);
+            setConnectionState("Reconnecting…");
+            reconnectTimer = setTimeout(() => void connect(), Math.min(1000 * 2 ** reconnectAttempts++, 15000));
+          }
         };
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Could not access camera/microphone.");
         setConnectionState("Offline");
+        if (active && !endingRef.current && streamRef.current && reconnectAttempts < 8) {
+          reconnectTimer = setTimeout(() => void connect(), Math.min(1000 * 2 ** reconnectAttempts++, 15000));
+        }
       }
     }
 
     void connect();
     return () => {
       active = false;
+      clearTimeout(reconnectTimer);
+      clearInterval(retryTimer);
+      reliableRef.current?.clear();
       socket?.close(1000, "Page closed");
       mediaFailureTimers.forEach((timer) => window.clearTimeout(timer));
       mediaFailureTimers.clear();
@@ -370,6 +433,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
       peerConnections.clear();
       remoteStreams.clear();
       streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
       recorderStreamRef.current?.getTracks().forEach((track) => track.stop());
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       void audioContextRef.current?.close();
@@ -505,7 +569,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
       const chunkIndex = chunkCountRef.current;
       chunkCountRef.current += 1;
       pendingChunkWritesRef.current = pendingChunkWritesRef.current
-        .then(() => saveRecordingChunk(recordingId, chunkIndex, event.data))
+        .then(() => saveRecordingChunk(recordingId, chunkIndex, event.data, roomId))
         .catch((caught) => {
           localWriteFailedRef.current = true;
           setError(caught instanceof Error ? caught.message : "A recording chunk could not be saved locally.");
@@ -567,6 +631,19 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
     if (chunks.some((chunk, index) => chunk.chunkIndex !== index)) {
       setError("The local recording has a missing chunk. Upload stopped.");
       return false;
+    }
+    if (storageProvider === "s3") {
+      try {
+        const videoId = await uploadRecordingToS3(recordingId, roomId, chunks.map((chunk) => chunk.blob), setUploadState);
+        await uploadFrame(videoId);
+        await clearRecordingChunks(recordingId);
+        setLocalChunksReady(false);
+        setUploadState("Recording saved.");
+        return true;
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "Upload failed. Your local recording is retained.");
+        return false;
+      }
     }
     setUploadState(`Uploading 0/${chunks.length}`);
 
@@ -750,7 +827,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange }:
       </div>
       <div className="controls">
         {isOwner && (
-          <button className={`btn ${recording ? "btnDanger" : "btnPrimary"}`} onClick={recording ? () => void stopRecordingAndUpload() : () => void startRecording()} disabled={ending}>
+          <button className={`btn ${recording ? "btnDanger" : "btnPrimary"}`} onClick={recording ? () => void stopRecordingAndUpload() : () => void startRecording()} disabled={ending || uploading || (!recording && localChunksReady)}>
             {recording ? "Stop recording" : "Record"}
           </button>
         )}

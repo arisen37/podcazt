@@ -26,6 +26,7 @@ export default async function RecordPage({ params }: { params: Promise<{ roomId:
         roomId={room.id}
         roomKind={room.kind}
         isOwner={room.roomOwnerId === user.id}
+        storageProvider={process.env.STORAGE_PROVIDER === "s3" ? "s3" : "supabase"}
         currentUser={{ name: user.name, username: user.username }}
       />
     </main>
