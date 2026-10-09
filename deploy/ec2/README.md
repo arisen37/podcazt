@@ -155,6 +155,45 @@ artifacts, and database dumps are excluded from Git and the Docker build context
 
 ## 7. Point your domain to EC2 and generate configuration
 
+### Temporary deployment directly on the public IPv4
+
+For an IP-only deployment, set these values in production `config.env`:
+
+```dotenv
+TLS_MODE=ip
+APP_DOMAIN=YOUR_PUBLIC_IPV4
+TURN_DOMAIN=YOUR_PUBLIC_IPV4
+PUBLIC_IP=YOUR_PUBLIC_IPV4
+PRIVATE_IP=YOUR_EC2_PRIVATE_IPV4
+ACME_EMAIL=
+```
+
+Use the same actual public IPv4 for all three public-host values. An empty
+email registers the Certbot account without email. Keep your other S3/auth
+settings configured as described below. Open the same security-group ports.
+
+```bash
+sudo bash setup-config.sh --write
+sudo bash install-ip-certbot.sh
+sudo bash deploy.sh
+sudo bash enable-tls.sh
+sudo certbot renew --dry-run
+```
+
+The IP certificate requires Certbot >=5.4, installed in an isolated environment
+by the installer; deployment rendering/tests still use TypeScript. The existing
+systemd renewal timer is configured to use the updated client. Let's Encrypt's
+[IP certificates](https://letsencrypt.org/2026/03/11/shorter-certs-certbot) expire
+after about six days, so automatic renewal and its deploy hook are essential.
+Use `https://YOUR_PUBLIC_IPV4` as the S3 CORS origin and app URL. Nginx serves
+HTTPS on 443 and Coturn serves TURN TLS on 5349 with that IP certificate.
+
+When adding DNS later, switch `TLS_MODE=domain`, set the two actual domains
+and ACME email, update DNS and S3 CORS, then regenerate configuration and rerun
+`deploy.sh` and `enable-tls.sh`. Keep the IP stable until that transition.
+
+### Domain deployment
+
 At your domain's DNS provider, create these two **DNS-only A records**:
 
 ```text

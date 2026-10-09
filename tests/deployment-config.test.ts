@@ -63,6 +63,28 @@ test("EC2 role config omits static credentials and rejects conflicting keys", (t
   assert.throws(() => renderConfiguration(directory, true), /Leave AWS credential values empty/);
 });
 
+test("IP TLS renders matching HTTPS, TURN and CORS hosts without an email", (t) => {
+  const directory = fixture();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, "config.env");
+  writeFileSync(path, readFileSync(path, "utf8")
+    .replace("TLS_MODE=domain", "TLS_MODE=ip")
+    .replace("studio.podcazt.test", "203.0.113.10")
+    .replace("turn.podcazt.test", "203.0.113.10")
+    .replace("ACME_EMAIL=you@example.com", "ACME_EMAIL="));
+  renderConfiguration(directory, true);
+  const runtime = readFileSync(join(directory, "runtime.env"), "utf8");
+  assert.match(runtime, /NEXT_PUBLIC_APP_URL='https:\/\/203\.0\.113\.10'/);
+  assert.match(runtime, /TURN_HOST='203\.0\.113\.10'/);
+  const nginx = readFileSync(join(directory, "generated/nginx-https.conf"), "utf8");
+  assert.match(nginx, /server_name 203\.0\.113\.10;/);
+  assert.match(nginx, /live\/203\.0\.113\.10\/fullchain.pem/);
+  const cors = JSON.parse(readFileSync(join(directory, "generated/s3-cors.json"), "utf8"));
+  assert.deepEqual(cors.CORSRules[0].AllowedOrigins, ["https://203.0.113.10"]);
+  writeFileSync(path, readFileSync(path, "utf8").replace("TURN_DOMAIN=203.0.113.10", "TURN_DOMAIN=203.0.113.11"));
+  assert.throws(() => renderConfiguration(directory, true), /set APP_DOMAIN and TURN_DOMAIN to PUBLIC_IP/);
+});
+
 test("deployment config rejects example domains without writing output", (t) => {
   const directory = fixture();
   t.after(() => rmSync(directory, { recursive: true, force: true }));

@@ -24,8 +24,8 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     environment:
-      NODE_OPTIONS: --max-old-space-size=384
-    mem_limit: 640m
+      NODE_OPTIONS: ${WEB_NODE_OPTIONS:---max-old-space-size=384}
+    mem_limit: ${WEB_MEMORY_LIMIT:-640m}
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
@@ -37,8 +37,8 @@ services:
     ports:
       - "127.0.0.1:4000:4000"
     environment:
-      NODE_OPTIONS: --max-old-space-size=128
-    mem_limit: 256m
+      NODE_OPTIONS: ${SIGNALING_NODE_OPTIONS:---max-old-space-size=128}
+    mem_limit: ${SIGNALING_MEMORY_LIMIT:-256m}
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
@@ -47,8 +47,8 @@ services:
     image: ${DOCKER_LIBRARY_PREFIX:-}postgres:16-bookworm
     restart: unless-stopped
     env_file: runtime.env
-    command: [postgres, -c, shared_buffers=64MB, -c, max_connections=40]
-    mem_limit: 384m
+    command: [postgres, -c, "shared_buffers=${POSTGRES_SHARED_BUFFERS:-64MB}", -c, "max_connections=${POSTGRES_MAX_CONNECTIONS:-40}"]
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-384m}
     volumes:
       - postgres:/var/lib/postgresql/data
     healthcheck:
@@ -61,8 +61,8 @@ services:
   redis:
     image: ${DOCKER_LIBRARY_PREFIX:-}redis:7-bookworm
     restart: unless-stopped
-    command: [redis-server, --maxmemory, 64mb, --maxmemory-policy, volatile-lru, --save, "", --appendonly, "no"]
-    mem_limit: 96m
+    command: [redis-server, --maxmemory, "${REDIS_MAXMEMORY:-64mb}", --maxmemory-policy, volatile-lru, --save, "", --appendonly, "no"]
+    mem_limit: ${REDIS_MEMORY_LIMIT:-96m}
     healthcheck:
       test: [CMD, redis-cli, ping]
       interval: 5s

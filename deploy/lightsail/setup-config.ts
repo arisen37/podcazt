@@ -16,18 +16,27 @@ export function renderConfiguration(directory: string, write = false) {
     if (separator < 1) throw new Error("Expected KEY=value in config.env");
     values[line.slice(0, separator).trim()] = line.slice(separator + 1).trim();
   }
-  for (const name of ["APP_DOMAIN", "TURN_DOMAIN"]) {
-    const value = values[name] ?? "";
-    if (!/^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$/.test(value)) {
-      throw new Error(`Set a valid ${name}`);
-    }
-    if (value === "example.com" || value.endsWith(".example.com")) throw new Error(`Replace the example ${name} with your domain`);
-  }
-  if (values.APP_DOMAIN === values.TURN_DOMAIN) throw new Error("Use a separate TURN subdomain");
+  const tlsMode = values.TLS_MODE || "domain";
+  if (!["domain", "ip"].includes(tlsMode)) throw new Error("TLS_MODE must be domain or ip");
   for (const name of ["PUBLIC_IP", "PRIVATE_IP"]) {
     if (!isIPv4(values[name] ?? "")) throw new Error(`Set a valid ${name}`);
   }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.ACME_EMAIL ?? "")) throw new Error("Set ACME_EMAIL");
+  if (tlsMode === "ip") {
+    if (values.APP_DOMAIN !== values.PUBLIC_IP || values.TURN_DOMAIN !== values.PUBLIC_IP) {
+      throw new Error("For IP TLS, set APP_DOMAIN and TURN_DOMAIN to PUBLIC_IP");
+    }
+  } else {
+    for (const name of ["APP_DOMAIN", "TURN_DOMAIN"]) {
+      const value = values[name] ?? "";
+      if (!/^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$/.test(value)) {
+        throw new Error(`Set a valid ${name}`);
+      }
+      if (value === "example.com" || value.endsWith(".example.com")) throw new Error(`Replace the example ${name} with your domain`);
+    }
+    if (values.APP_DOMAIN === values.TURN_DOMAIN) throw new Error("Use a separate TURN subdomain");
+  }
+  values.TLS_SERVER_NAMES = tlsMode === "ip" ? values.PUBLIC_IP : `${values.APP_DOMAIN} ${values.TURN_DOMAIN}`;
+  if ((values.ACME_EMAIL || tlsMode === "domain") && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.ACME_EMAIL ?? "")) throw new Error("Set ACME_EMAIL");
   if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(values.S3_BUCKET ?? "")) throw new Error("Set S3_BUCKET");
   if (!/^[a-z]{2}-[a-z]+-\d$/.test(values.AWS_REGION ?? "")) throw new Error("Set AWS_REGION");
   const authMode = values.AWS_AUTH_MODE || "static";
