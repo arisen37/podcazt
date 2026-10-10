@@ -1,0 +1,24 @@
+name: podcazt-metrics
+services:
+  postgres:
+    image: ${DOCKER_LIBRARY_PREFIX:-public.ecr.aws/docker/library/}postgres:16-bookworm
+    environment:
+      POSTGRES_USER: metrics
+      POSTGRES_DB: podcazt_metrics
+      POSTGRES_PASSWORD: metrics-local-only
+    ports: ["127.0.0.1:55432:5432"]
+    tmpfs: ["/var/lib/postgresql/data"]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U metrics -d podcazt_metrics"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: ${DOCKER_LIBRARY_PREFIX:-public.ecr.aws/docker/library/}redis:7-bookworm
+    command: [redis-server, --save, "", --appendonly, "no", --requirepass, metrics-local-only]
+    ports: ["127.0.0.1:56379:6379"]
+    healthcheck:
+      test: [CMD, redis-cli, -a, metrics-local-only, ping]
+      interval: 2s
+      timeout: 3s
+      retries: 30

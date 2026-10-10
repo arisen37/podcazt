@@ -16,7 +16,14 @@
     "typecheck": "tsc --noEmit",
     "test:reliability": "node --import tsx --test tests/reliability.test.ts",
     "test:deployment-config": "node --import tsx --test tests/deployment-config.test.ts",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "node --import tsx --test tests/*.test.ts",
+    "metrics": "node --env-file-if-exists=.env.metrics --import tsx tests/metrics/run.ts",
+    "metrics:local": "node --env-file-if-exists=.env.metrics --import tsx tests/metrics/local.ts",
+    "metrics:up": "docker compose -f tests/metrics/compose.yaml up -d --wait",
+    "metrics:down": "docker compose -f tests/metrics/compose.yaml down",
+    "metrics:browsers": "playwright install chromium",
+    "test:metrics": "node --import tsx --test tests/metrics.test.ts",
+    "metrics:hosted": "node --env-file-if-exists=.env.metrics --import tsx tests/metrics/hosted.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1148.0",
@@ -45,8 +52,10 @@
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@types/ws": "^8.5.12",
+    "esbuild": "0.28.1",
     "eslint": "^9.9.1",
     "eslint-config-next": "^15.0.0",
+    "playwright": "1.64.0",
     "typescript": "^5.6.2"
   },
   "overrides": {

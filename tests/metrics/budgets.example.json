@@ -1,0 +1,10 @@
+{
+  "M01": { "latencyMs.p95": { "max": 200 }, "errorPercent": { "max": 0 } },
+  "M04": { "negativeCaseRejectionPercent": { "min": 100 } },
+  "M06": { "overLimitBlockedPercent": { "min": 100 } },
+  "M07": { "latencyMs.p95": { "max": 100 } },
+  "M09": { "deliveryPercent": { "min": 100 } },
+  "M13": { "packetLossPercent": { "max": 1 } },
+  "M14": { "decodeDropPercent": { "max": 5 } },
+  "M15": { "recoveryMs.p95": { "max": 15000 } }
+}

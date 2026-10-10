@@ -29,6 +29,8 @@ deploy/local/certs/
 *.sql.gz
 /backups/
 /recordings/
+/artifacts/metrics/
+!.env.metrics.example
 deploy/aws/config.env
 deploy/aws/runtime.env
 deploy/aws/generated/
