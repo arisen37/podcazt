@@ -24,6 +24,7 @@ elif [[ "$(readlink -f "$legacy_dir")" != "$deploy_dir" ]]; then
   exit 1
 fi
 install -m 0755 "$script_dir/github-deploy.sh" "$deploy_dir/github-deploy.sh"
+install -m 0755 "$script_dir/cleanup-images.sh" "$deploy_dir/cleanup-images.sh"
 install -m 0755 "$script_dir/github-ssh-dispatch.sh" /usr/local/sbin/podcazt-github-ssh
 install -d -m 0700 -o ubuntu -g ubuntu /home/ubuntu/.ssh
 touch /home/ubuntu/.ssh/authorized_keys

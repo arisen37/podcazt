@@ -418,8 +418,9 @@ One-time setup for a provisioned host:
 5. Push to `main`, or use Actions → CI and EC2 deployment → Run workflow on
    `main`. Watch the checks, image, and deploy jobs. The server records the active
    commit/digest in `/opt/podcazt/deploy/aws/github-release.txt` and retains
-   `podcazt:rollback`. Keep enough disk space for both the current and new image;
-   expand the root volume if an image pull runs out of space.
+   `podcazt:rollback`. After health checks, `cleanup-images.sh` removes older
+   application GHCR digests, retaining both tagged images and any image used by
+   the web/signaling containers. It never prunes database images or volumes.
 
 Application secrets stay in `config.env`/`runtime.env` on EC2. The short-lived
 workflow token is used to pull from GHCR and its temporary Docker login is
@@ -431,3 +432,37 @@ static public IP, and equivalent firewall ports. Set `AWS_AUTH_MODE=static` with
 restricted bucket credentials when an EC2 instance role is unavailable. Choose
 the image architecture matching your host; the included workflow targets the
 current ARM64 EC2 server.
+
+### Deployment fails with `no space left on device`
+
+This error during layer extraction means EC2 storage is full. The Docker login
+warning about unencrypted credentials does not cause it; the temporary login
+directory is removed when deployment exits. Changing the EC2 instance type does
+not increase its EBS volume.
+
+Use a root volume of at least 20 GiB for this deployment, and leave at least
+2 GiB free before a release that changes dependencies. Docker's containerd image
+store can retain both compressed and extracted layers. The 512 MiB preflight
+floor checks deployment and Docker storage before building and again before
+pulling; it is a minimum, not a guarantee that a large new image will fit.
+
+Inspect storage through the administrator SSH key:
+
+```bash
+df -h / /var/lib/docker /var/lib/containerd
+sudo docker system df
+sudo docker image ls --digests
+```
+
+If the host still holds unused cache from older builds, reclaim it with
+`sudo docker builder prune --all --force`. Builds now run on GitHub, so EC2 does
+not need that build cache. To retire superseded application digests after a
+successful release, run
+`sudo bash /opt/podcazt/deploy/aws/cleanup-images.sh`. Missing protected images
+make that script stop without deleting images. Avoid `docker system prune -a`
+and volume pruning: preserve the rollback image and production data.
+
+If free space remains low, expand the EBS volume, partition, and filesystem;
+then verify `df -h` shows the increased capacity. Retry the failed jobs in GitHub
+Actions after recovering space. Storage cleanup alone cannot make an 8 GiB
+volume reliably accommodate growing application images and database data.

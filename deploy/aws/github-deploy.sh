@@ -21,15 +21,28 @@ if [[ $EUID -ne 0 ]]; then echo 'Run through the installed SSH dispatcher.' >&2;
 cd "$deploy_dir"
 [[ -f runtime.env && -f config.env ]] || { echo 'Production configuration is missing.' >&2; exit 1; }
 compose=(docker compose --project-directory "$deploy_dir")
-free_kib=$(df -Pk "$deploy_dir" | awk 'NR==2 {print $4}')
-if (( free_kib < 131072 )); then
-  echo 'Less than 128 MiB is free. Expand the EC2 root volume before deploying.' >&2
-  exit 1
-fi
+check_space() {
+  local storage_dir free_kib
+  storage_dir=$(docker info --format '{{.DockerRootDir}}')
+  [[ "$storage_dir" == /* && -d "$storage_dir" ]] || {
+    echo 'Cannot locate Docker storage; refusing deployment.' >&2
+    exit 1
+  }
+  for storage_dir in "$deploy_dir" "$storage_dir" /var/lib/containerd; do
+    [[ -d "$storage_dir" ]] || continue
+    free_kib=$(df -Pk "$storage_dir" | awk 'NR==2 {print $4}')
+    if [[ ! "$free_kib" =~ ^[0-9]+$ ]] || (( free_kib < 524288 )); then
+      echo "Less than 512 MiB is free on $storage_dir, or space could not be checked. Expand the EC2 volume before deploying." >&2
+      exit 1
+    fi
+    printf 'Storage check: %s has %s KiB free.\n' "$storage_dir" "$free_kib"
+  done
+}
+check_space
 if [[ "$command" == check ]]; then
   "${compose[@]}" config --quiet
   docker image inspect podcazt:latest >/dev/null
-  printf 'EC2 deployment access OK; %s KiB free.\n' "$free_kib"
+  printf 'EC2 deployment access OK.\n'
   exit 0
 fi
 
@@ -63,6 +76,8 @@ git_as_owner fetch origin main
 # The short-lived workflow token arrives on stdin and is never placed in argv.
 docker --config "$auth_dir" login ghcr.io --username "$registry_user" --password-stdin
 image="$image_repository@$digest"
+# Space may have changed while waiting for the deployment lock or image build.
+check_space
 docker --config "$auth_dir" pull "$image"
 [[ "$(docker image inspect "$image" --format '{{.Architecture}}')" == arm64 ]]
 [[ "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" == "$revision" ]]
@@ -90,8 +105,14 @@ curl --fail --silent --show-error --retry 5 --retry-delay 2 --max-time 20 --outp
 install -m 0755 "$source_dir/deploy/aws/github-deploy.sh" "$deploy_dir/github-deploy.sh.next"
 mv "$deploy_dir/github-deploy.sh.next" "$deploy_dir/github-deploy.sh"
 install -m 0755 "$source_dir/deploy/aws/backup.sh" "$deploy_dir/backup.sh"
+install -m 0755 "$source_dir/deploy/aws/cleanup-images.sh" "$deploy_dir/cleanup-images.sh"
 install -m 0644 "$source_dir/deploy/aws/podcazt-backup.service" "$deploy_dir/podcazt-backup.service"
 install -m 0644 "$deploy_dir/podcazt-backup.service" /etc/systemd/system/podcazt-backup.service
 systemctl daemon-reload
 printf '%s\n' "$revision $image" > "$deploy_dir/github-release.txt"
 printf '\nDeployed %s successfully. Previous image: %s\n' "$revision" "$previous_image"
+# Cleanup failure must not roll back an already healthy release.
+if ! bash "$deploy_dir/cleanup-images.sh"; then
+  echo 'Warning: some superseded images could not be removed; inspect Docker disk usage.' >&2
+fi
+df -h "$deploy_dir" || true
