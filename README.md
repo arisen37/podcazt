@@ -1,14 +1,9 @@
 # Podcazt
 
-For EC2 in Mumbai, follow [the EC2 deployment guide](deploy/ec2/README.md).
-It reuses the production Ubuntu scripts and supports S3 access through an EC2
-instance role, with Nginx, Certbot, and Coturn on the host.
-
-For the AWS deployment on a single Lightsail instance in Mumbai, see
-[the Lightsail deployment guide](deploy/lightsail/README.md). It includes Docker
-Compose, Nginx, Certbot renewal, self-hosted Coturn, private S3 recording storage,
-PostgreSQL backups, and resumable uploads with selective retries. The sections
-below also describe the original Supabase/Metered development configuration.
+For AWS EC2 deployment and GitHub Actions CI/CD, follow [the AWS deployment guide](deploy/aws/README.md).
+The shared Ubuntu deployment also works on Lightsail. It includes Docker Compose,
+Nginx, Certbot renewal, Coturn, private S3 recording storage, and PostgreSQL backups.
+The sections below also describe the original Supabase/Metered development configuration.
 
 To test the deployment locally with Docker, Nginx, trusted local HTTPS, and
 Coturn, follow [the local Docker testing guide](deploy/local/README.md).

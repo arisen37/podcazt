@@ -84,7 +84,7 @@ the two files above have not been generated at the mounted `certs` path.
 
 Use a separate bucket in Mumbai (`ap-south-1`), with Block Public Access enabled
 and default SSE-S3 encryption. Configure the app IAM user using the bucket-scoped
-policy described in [the deployment guide](../lightsail/README.md#5-create-private-s3-storage-and-restricted-credentials).
+policy described in [the deployment guide](../aws/README.md#2-create-the-s3-bucket-and-ec2-role).
 
 In an authenticated AWS CLI session (the CLI does not automatically load this
 app's `.env`), run from `deploy/local`:

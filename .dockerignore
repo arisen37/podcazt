@@ -26,3 +26,6 @@ deploy/local/certs
 *.sql.gz
 backups
 recordings
+deploy/aws/config.env
+deploy/aws/runtime.env
+deploy/aws/generated

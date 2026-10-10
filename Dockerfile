@@ -20,6 +20,9 @@ FROM client AS build
 COPY . .
 RUN --mount=type=cache,target=/app/.next/cache \
     mkdir -p public && npm run build
+# The full production node_modules below supplies these traced dependencies.
+# Exclude the duplicate copy from the standalone layer to reduce EC2 disk use.
+RUN node -e "require('node:fs').rmSync('.next/standalone/node_modules', { recursive: true, force: true })"
 
 # Pruning depends on packages and the generated client, not application source.
 FROM client AS production-deps
@@ -36,8 +39,10 @@ COPY --from=build --chown=node:node /app/server ./server
 COPY --from=build --chown=node:node /app/lib ./lib
 COPY --from=build --chown=node:node /app/prisma ./prisma
 COPY --from=build --chown=node:node /app/tsconfig.json ./tsconfig.json
-COPY --from=build --chown=node:node /app/deploy/lightsail/upload-backup.mjs ./deploy/lightsail/upload-backup.mjs
-COPY --from=build --chown=node:node /app/deploy/lightsail/setup-config.ts ./deploy/lightsail/setup-config.ts
+COPY --from=build --chown=node:node /app/scripts ./scripts
+COPY --from=build --chown=node:node /app/deploy/aws/upload-backup.mjs ./deploy/aws/upload-backup.mjs
+COPY --from=build --chown=node:node /app/deploy/aws/setup-config.ts ./deploy/aws/setup-config.ts
+RUN ln -s aws deploy/lightsail
 USER node
 EXPOSE 3000 4000
 CMD ["node", "server.js"]

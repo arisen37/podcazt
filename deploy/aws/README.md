@@ -1,15 +1,17 @@
-# Podcazt on EC2 in Mumbai
+# Podcazt on AWS
 
 Use one **t4g.small (2 vCPU, 2 GiB RAM), Ubuntu Server 24.04 LTS ARM64**
 instance, a **20 GiB encrypted gp3** root volume, one Elastic IP, and private S3.
 The host runs Nginx, Certbot, and Coturn. Docker Compose runs web, signaling,
 PostgreSQL, and Redis. This is a small pilot deployment with one host.
 
-The shared production scripts are in `deploy/lightsail`; despite that directory
-name, they also support an Ubuntu EC2 host. Do not use `deploy/local` on EC2.
-Clone the source from GitHub and build on EC2 before starting the application.
-No local image archive or `.tar.gz` transfer is required. Production configuration
-stays outside the source checkout.
+All production files live in `deploy/aws`. Use this same directory for an Ubuntu
+EC2 or Lightsail host; do not use `deploy/local` in production. Production
+configuration stays in `/opt/podcazt/deploy/aws`, outside the source checkout.
+
+[GitHub Actions CI/CD](#github-actions-cicd) builds images off the server and
+deploys successful `main` commits automatically. The numbered steps below cover
+initial provisioning and a manual first deployment.
 
 ## 1. Check the budget
 
@@ -38,7 +40,7 @@ balancer, RDS, ElastiCache, and paid detailed monitoring for this setup.
    A production bucket separate from your local test bucket keeps their settings
    independent.
 2. In IAM → Policies → Create policy → JSON, paste
-   [`../lightsail/templates/s3-policy.json`](../lightsail/templates/s3-policy.json),
+   [`templates/s3-policy.json`](templates/s3-policy.json),
    replacing every `@@S3_BUCKET@@` with the exact bucket name. Name it
    `PodcaztBucketAccess`. This is an IAM identity policy, not a public bucket policy.
 3. IAM → Roles → Create role → AWS service → EC2. Attach only that policy and
@@ -125,15 +127,15 @@ token in a clone URL or commit one. Keep the repository's existing visibility.
 Still in the source checkout:
 
 ```bash
-sudo bash deploy/lightsail/bootstrap.sh
+sudo bash deploy/aws/bootstrap.sh
 sudo install -d -m 0755 /opt/podcazt/deploy
-sudo cp -R deploy/lightsail /opt/podcazt/deploy/
+sudo cp -R deploy/aws /opt/podcazt/deploy/
 
 sudo docker build --platform linux/arm64 \
   --build-arg NODE_IMAGE=public.ecr.aws/docker/library/node:22-bookworm-slim \
   -t podcazt:latest .
 
-cd /opt/podcazt/deploy/lightsail
+cd /opt/podcazt/deploy/aws
 sudo test -f config.env || sudo cp config.env.example config.env
 sudo chmod 600 config.env
 printf 'DOCKER_LIBRARY_PREFIX=public.ecr.aws/docker/library/\n' | sudo tee .env >/dev/null
@@ -145,7 +147,7 @@ headroom. The first build may take several minutes; it downloads dependencies
 directly on EC2. Coturn stays disabled until configured with authentication and
 certificates. The Node base image and Compose PostgreSQL/Redis images use Docker's
 official ECR mirror, avoiding the Docker Hub authorization failure encountered
-locally. Application secrets belong in `/opt/podcazt/deploy/lightsail/config.env`,
+locally. Application secrets belong in `/opt/podcazt/deploy/aws/config.env`,
 outside the Git checkout. Do not copy your local `.env`, local TLS private key,
 or development database to EC2.
 
@@ -215,7 +217,7 @@ dig +short A turn.yourdomain.com
 In the EC2 SSH terminal:
 
 ```bash
-cd /opt/podcazt/deploy/lightsail
+cd /opt/podcazt/deploy/aws
 sudo nano config.env
 ```
 
@@ -250,7 +252,7 @@ Never print `runtime.env` or run `docker compose config` without `--quiet`.
 ## 8. Configure S3 CORS and lifecycle
 
 In S3 → your bucket → Permissions → CORS, paste the array inside `CORSRules`
-from `/opt/podcazt/deploy/lightsail/generated/s3-cors.json`. It allows exactly
+from `/opt/podcazt/deploy/aws/generated/s3-cors.json`. It allows exactly
 `https://studio.yourdomain.com` (using your configured domain).
 
 In Management → Lifecycle rules, configure the rules from
@@ -275,7 +277,7 @@ cannot change bucket configuration.
 On EC2:
 
 ```bash
-cd /opt/podcazt/deploy/lightsail
+cd /opt/podcazt/deploy/aws
 sudo bash deploy.sh
 sudo bash enable-tls.sh
 sudo certbot renew --dry-run
@@ -291,7 +293,7 @@ restarts that service and briefly interrupts relayed calls.
 ## 10. Verify the deployment
 
 ```bash
-cd /opt/podcazt/deploy/lightsail
+cd /opt/podcazt/deploy/aws
 sudo docker compose config --quiet
 sudo docker compose ps
 sudo nginx -t
@@ -315,7 +317,7 @@ relay-allocation probe; a full media-path test still needs two peers.
 ## 11. Enable database backups
 
 ```bash
-cd /opt/podcazt/deploy/lightsail
+cd /opt/podcazt/deploy/aws
 sudo install -m 0644 podcazt-backup.service podcazt-backup.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now podcazt-backup.timer
@@ -337,8 +339,8 @@ git pull --ff-only origin main
 sudo docker build --platform linux/arm64 \
   --build-arg NODE_IMAGE=public.ecr.aws/docker/library/node:22-bookworm-slim \
   -t podcazt:latest .
-sudo cp -R deploy/lightsail /opt/podcazt/deploy/
-cd /opt/podcazt/deploy/lightsail
+sudo cp -R deploy/aws /opt/podcazt/deploy/
+cd /opt/podcazt/deploy/aws
 sudo bash setup-config.sh --write
 sudo bash deploy.sh
 ```
@@ -346,8 +348,7 @@ sudo bash deploy.sh
 Builds compete with the running services for the instance's 2 GiB of RAM. If
 memory pressure affects calls, schedule an update window and stop web/signaling
 before building; `deploy.sh` starts them again. The previous image and running
-containers remain available if the build itself fails. A GitHub Actions image
-build can be added later to move that workload off EC2.
+containers remain available if the build itself fails. The GitHub Actions pipeline below moves image builds off EC2.
 
 Stopping EC2 pauses instance compute charges, but attached EBS and allocated
 Elastic IPs still cost money, and the app/calls are unavailable while stopped.
@@ -358,3 +359,75 @@ instance; include role attachment and metadata options when recreating it.
 The scripts and TypeScript configuration tests have been checked locally; this
 guide does not claim that resources have already been created or tested in your
 AWS account.
+
+## GitHub Actions CI/CD
+
+The workflow in [`.github/workflows/ci-cd.yml`](../../.github/workflows/ci-cd.yml)
+runs lint, tests, and a production build for pull requests and pushes to `main`.
+Successful `main` runs publish an ARM64 image to `ghcr.io/arisen37/podcazt`, smoke
+test it, and deploy that exact digest over SSH. Dependency layers use the GitHub
+Actions build cache. EC2 pulls the image instead of running `npm ci` or a build.
+
+The deployment checks that the commit is still `origin/main`, backs up PostgreSQL
+to S3, applies migrations, waits for web/signaling health checks, and checks the
+public HTTPS health and favicon routes. An application failure restores the
+previous image. Database migrations are not reversed; use migrations compatible
+with the previous application version. Container replacement briefly interrupts
+calls, so deploy outside active recording sessions.
+
+One-time setup for a provisioned host:
+
+1. Generate a dedicated key on a trusted machine:
+
+   ```bash
+   ssh-keygen -t ed25519 -N '' -C podcazt-github-actions -f /tmp/podcazt-actions
+   scp -i /path/to/podcazt.pem /tmp/podcazt-actions.pub ubuntu@YOUR_EC2_IP:/tmp/
+   ```
+
+2. On EC2, from the source checkout, install the restricted key:
+
+   ```bash
+   sudo bash deploy/aws/install-github-deploy.sh /tmp/podcazt-actions.pub
+   ```
+
+   This moves an existing `/opt/podcazt/deploy/lightsail` directory to `aws` and
+   leaves a compatibility symlink for existing certificate hooks. The key can
+   only invoke deployment commands; SSH forwarding and interactive sessions are
+   disabled. The original administrator key remains separate.
+
+3. In GitHub → repository Settings → Secrets and variables → Actions, add:
+
+   | Type | Name | Value |
+   | --- | --- | --- |
+   | Secret | `EC2_DEPLOY_KEY` | Contents of the dedicated private key |
+   | Variable | `EC2_HOST` | Stable EC2 public IPv4 |
+   | Variable | `EC2_USER` | `ubuntu` |
+   | Variable | `EC2_KNOWN_HOSTS` | Trusted SSH host-key line for that IP |
+
+   Verify the host key through your existing trusted SSH connection; do not
+   automatically trust a new `ssh-keyscan` result in the workflow. Create a
+   `production` environment restricted to `main`, with no required reviewers if
+   automatic deployment is desired. Remove the temporary private key after
+   saving it securely in GitHub. No AWS access keys are required in Actions.
+
+4. Allow the GitHub runner to reach SSH in the EC2 security group/firewall. The
+   administrator-only `/32` rule in the provisioning steps alone will not allow
+   hosted runners. Choose an access policy for your network, or use a runner with
+   a stable IP. The workflow checks SSH access before building/publishing.
+
+5. Push to `main`, or use Actions → CI and EC2 deployment → Run workflow on
+   `main`. Watch the checks, image, and deploy jobs. The server records the active
+   commit/digest in `/opt/podcazt/deploy/aws/github-release.txt` and retains
+   `podcazt:rollback`. Keep enough disk space for both the current and new image;
+   expand the root volume if an image pull runs out of space.
+
+Application secrets stay in `config.env`/`runtime.env` on EC2. The short-lived
+workflow token is used to pull from GHCR and its temporary Docker login is
+removed after deployment. Changes to Compose, Nginx, Coturn, certificates, or
+runtime environment settings still require an explicit host configuration update.
+
+For Lightsail, use the same directory and scripts with an Ubuntu instance, a
+static public IP, and equivalent firewall ports. Set `AWS_AUTH_MODE=static` with
+restricted bucket credentials when an EC2 instance role is unavailable. Choose
+the image architecture matching your host; the included workflow targets the
+current ARM64 EC2 server.

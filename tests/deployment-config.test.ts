@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { renderConfiguration } from "../deploy/lightsail/setup-config";
+import { renderConfiguration } from "../deploy/aws/setup-config";
 
 function fixture() {
-  const source = resolve(__dirname, "../deploy/lightsail");
+  const source = resolve(__dirname, "../deploy/aws");
   const directory = mkdtempSync(join(tmpdir(), "podcazt-config-test-"));
   cpSync(join(source, "templates"), join(directory, "templates"), { recursive: true });
   const config = readFileSync(join(source, "config.env.example"), "utf8")
@@ -120,7 +120,7 @@ test("TypeScript config CLI accepts a mounted configuration directory", (t) => {
   const directory = fixture();
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const output = execFileSync(process.execPath, [
-    "--import", "tsx", resolve(__dirname, "../deploy/lightsail/setup-config.ts"),
+    "--import", "tsx", resolve(__dirname, "../deploy/aws/setup-config.ts"),
     "--config-dir", directory, "--write"
   ], { encoding: "utf8" });
   assert.ok(output.includes("Generated configuration"));
