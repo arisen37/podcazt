@@ -31,8 +31,8 @@ check_space() {
   for storage_dir in "$deploy_dir" "$storage_dir" /var/lib/containerd; do
     [[ -d "$storage_dir" ]] || continue
     free_kib=$(df -Pk "$storage_dir" | awk 'NR==2 {print $4}')
-    if [[ ! "$free_kib" =~ ^[0-9]+$ ]] || (( free_kib < 524288 )); then
-      echo "Less than 512 MiB is free on $storage_dir, or space could not be checked. Expand the EC2 volume before deploying." >&2
+    if [[ ! "$free_kib" =~ ^[0-9]+$ ]] || (( free_kib < 2097152 )); then
+      echo "Less than 2 GiB is free on $storage_dir, or space could not be checked. Expand the EC2 volume before deploying." >&2
       exit 1
     fi
     printf 'Storage check: %s has %s KiB free.\n' "$storage_dir" "$free_kib"

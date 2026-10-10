@@ -442,7 +442,7 @@ not increase its EBS volume.
 
 Use a root volume of at least 20 GiB for this deployment, and leave at least
 2 GiB free before a release that changes dependencies. Docker's containerd image
-store can retain both compressed and extracted layers. The 512 MiB preflight
+store can retain both compressed and extracted layers. The 2 GiB preflight
 floor checks deployment and Docker storage before building and again before
 pulling; it is a minimum, not a guarantee that a large new image will fit.
 
