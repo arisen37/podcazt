@@ -1,5 +1,5 @@
 export type ReliableMessage = { type: string; messageId?: string; ackId?: string; [key: string]: unknown };
-const reliableTypes = new Set(["offer", "answer", "ice-candidate"]);
+const reliableTypes = new Set(["offer", "answer", "ice-candidate", "ice-restart"]);
 
 /** Selective-repeat acknowledgements for negotiation messages on a live socket.
  * Reconnection creates fresh peers rather than replaying stale SDP/ICE state.

@@ -8,7 +8,7 @@
     "start:signal": "NODE_ENV=production tsx server/signaling.ts",
     "build": "next build",
     "start": "next start",
-    "postinstall": "prisma generate",
+    "postinstall": "node scripts/prisma-postinstall.mjs",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",

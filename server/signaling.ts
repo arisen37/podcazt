@@ -9,7 +9,7 @@ import type { SessionUser } from "../lib/types";
 import { ReliableSignaling, type ReliableMessage } from "../lib/reliable-signaling";
 
 type ClientMessage = {
-  type: "join" | "offer" | "answer" | "ice-candidate" | "leave" | "end-room";
+  type: "join" | "offer" | "answer" | "ice-candidate" | "ice-restart" | "leave" | "end-room";
   roomId?: string;
   targetPeerId?: string;
   payload?: unknown;
@@ -30,7 +30,7 @@ type SignalingEvent =
     }
   | {
       type: "signal";
-      signalType: "offer" | "answer" | "ice-candidate";
+      signalType: "offer" | "answer" | "ice-candidate" | "ice-restart";
       roomId: string;
       targetPeerId: string;
       peerId: string;
@@ -184,10 +184,10 @@ function peerSummary(peer: Peer) {
 
 async function routeSignal(roomId: string, source: Peer, message: ClientMessage) {
   if (!message.targetPeerId) return;
-  if (!["offer", "answer", "ice-candidate"].includes(message.type)) return;
+  if (!["offer", "answer", "ice-candidate", "ice-restart"].includes(message.type)) return;
   await publishSignalingEvent({
     type: "signal",
-    signalType: message.type as "offer" | "answer" | "ice-candidate",
+    signalType: message.type as "offer" | "answer" | "ice-candidate" | "ice-restart",
     roomId,
     targetPeerId: message.targetPeerId,
     peerId: source.peerId,
@@ -292,7 +292,7 @@ wss.on("connection", (socket: WebSocket) => {
       }
 
       if (!currentRoomId || message.roomId !== currentRoomId) return;
-      if (["offer", "answer", "ice-candidate"].includes(message.type)) {
+      if (["offer", "answer", "ice-candidate", "ice-restart"].includes(message.type)) {
         await routeSignal(currentRoomId, peer, message);
         reliable.processed(message as ReliableMessage);
       }

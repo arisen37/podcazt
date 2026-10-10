@@ -7,6 +7,7 @@ import { getRealtimeToken, getSignalingUrl } from "@/lib/realtime-client";
 import { clearRecordingChunks, getRecordingChunks, getRecoverableRecordingId, saveRecordingChunk } from "@/lib/recording-store";
 import { uploadRecordingToS3 } from "@/lib/s3-upload-client";
 import { ReliableSignaling, type ReliableMessage } from "@/lib/reliable-signaling";
+import { IceRecovery } from "@/lib/ice-recovery";
 
 type Participant = {
   peerId: string;
@@ -116,7 +117,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange, s
   const candidatesRef = useRef(new Map<string, RTCIceCandidateInit[]>());
   const remoteStreamsRef = useRef(new Map<string, MediaStream>());
   const videoElementsRef = useRef(new Map<string, HTMLVideoElement>());
-  const mediaFailureTimersRef = useRef(new Map<string, number>());
+  const iceRecoveryRef = useRef(new Map<string, IceRecovery>());
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recorderStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -180,9 +181,8 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange, s
   }, [roomId]);
 
   const removePeer = useCallback((peerId: string) => {
-    const failureTimer = mediaFailureTimersRef.current.get(peerId);
-    if (failureTimer) window.clearTimeout(failureTimer);
-    mediaFailureTimersRef.current.delete(peerId);
+    iceRecoveryRef.current.get(peerId)?.dispose();
+    iceRecoveryRef.current.delete(peerId);
     peersRef.current.get(peerId)?.close();
     peersRef.current.delete(peerId);
     candidatesRef.current.delete(peerId);
@@ -205,9 +205,43 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange, s
     const iceServers = iceServersRef.current;
     const turnConfigured = iceServers.some(isTurnServer);
     const peer = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 4 });
-    let restartAttempts = 0;
     let relayCandidateFound = false;
     let turnFailure: string | null = null;
+    const clearMediaIssue = () => setMediaIssues((current) => {
+      if (!(peerId in current)) return current;
+      const next = { ...current };
+      delete next[peerId];
+      return next;
+    });
+    const resetDiagnostics = () => {
+      relayCandidateFound = false;
+      turnFailure = null;
+    };
+    const recovery = new IceRecovery(peer, {
+      canSignal: () => !endingRef.current && socketRef.current?.readyState === WebSocket.OPEN,
+      isOfferer: () => localPeerIdRef.current < peerId,
+      send: (message) => sendSignal({ ...message, targetPeerId: peerId }),
+      onRecovering: () => {
+        clearMediaIssue();
+        setConnectingPeerIds((current) => current.includes(peerId) ? current : [...current, peerId]);
+      },
+      onAttempt: resetDiagnostics,
+      onConnected: () => {
+        turnFailure = null;
+        clearMediaIssue();
+        setConnectingPeerIds((current) => current.filter((id) => id !== peerId));
+      },
+      onFailed: () => {
+        setConnectingPeerIds((current) => current.filter((id) => id !== peerId));
+        setMediaIssues((current) => ({
+          ...current,
+          [peerId]: turnConfigured && !relayCandidateFound
+            ? turnFailure ?? "The TURN server did not provide a relay candidate. Check its credentials and network access."
+            : "Could not restore the media connection. Check your network or rejoin the room."
+        }));
+      }
+    });
+    iceRecoveryRef.current.set(peerId, recovery);
     setConnectingPeerIds((current) => current.includes(peerId) ? current : [...current, peerId]);
     streamRef.current?.getTracks().forEach((track) => peer.addTrack(track, streamRef.current as MediaStream));
     peer.onicecandidate = (event) => {
@@ -224,6 +258,11 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange, s
       const transport = new URLSearchParams(event.url.split("?")[1] ?? "").get("transport");
       turnFailure = `TURN ${transport ? `${transport.toUpperCase()} ` : ""}allocation failed (${event.errorCode}): ${event.errorText || "check the server and credentials"}`;
     };
+    peer.onicegatheringstatechange = () => {
+      if (peer.iceGatheringState === "gathering") resetDiagnostics();
+    };
+    peer.oniceconnectionstatechange = () => recovery.stateChanged();
+    peer.onsignalingstatechange = () => recovery.signalingChanged();
     peer.ontrack = (event) => {
       const stream = event.streams[0] ?? remoteStreamsRef.current.get(peerId) ?? new MediaStream();
       if (!event.streams[0] && !stream.getTracks().some((track) => track.id === event.track.id)) {
@@ -235,43 +274,7 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange, s
       ));
     };
     peer.onconnectionstatechange = () => {
-      if (peer.connectionState === "connected") {
-        restartAttempts = 0;
-        const failureTimer = mediaFailureTimersRef.current.get(peerId);
-        if (failureTimer) window.clearTimeout(failureTimer);
-        mediaFailureTimersRef.current.delete(peerId);
-        setConnectingPeerIds((current) => current.filter((id) => id !== peerId));
-        setMediaIssues((current) => {
-          if (!(peerId in current)) return current;
-          const next = { ...current };
-          delete next[peerId];
-          return next;
-        });
-      }
-      if (["failed", "disconnected"].includes(peer.connectionState) && !mediaFailureTimersRef.current.has(peerId)) {
-        setConnectingPeerIds((current) => current.includes(peerId) ? current : [...current, peerId]);
-        const timer = window.setTimeout(() => {
-          mediaFailureTimersRef.current.delete(peerId);
-          if (!["failed", "disconnected"].includes(peer.connectionState)) return;
-          // Exactly one side initiates recovery to avoid simultaneous restart offers.
-          if (localPeerIdRef.current < peerId && restartAttempts < 2 && socketRef.current?.readyState === WebSocket.OPEN) {
-            restartAttempts++;
-            void peer.createOffer({ iceRestart: true }).then(async (offer) => {
-              if (peer.signalingState !== "stable") return;
-              await peer.setLocalDescription(offer);
-              sendSignal({ type: "offer", targetPeerId: peerId, payload: offer });
-            }).catch(() => setError("Call recovery failed. Rejoin the room."));
-          }
-          setConnectingPeerIds((current) => current.filter((id) => id !== peerId));
-          setMediaIssues((current) => ({
-            ...current,
-            [peerId]: turnConfigured && !relayCandidateFound
-              ? turnFailure ?? "The TURN server did not provide a relay candidate. Check its credentials and network access."
-              : "Could not establish a media path to this participant. Check both participants' network access."
-          }));
-        }, 15_000);
-        mediaFailureTimersRef.current.set(peerId, timer);
-      }
+      recovery.stateChanged();
       if (peer.connectionState === "closed") removePeer(peerId);
     };
     peersRef.current.set(peerId, peer);
@@ -290,7 +293,14 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange, s
     let reconnectAttempts = 0;
     const peerConnections = peersRef.current;
     const remoteStreams = remoteStreamsRef.current;
-    const mediaFailureTimers = mediaFailureTimersRef.current;
+    const iceRecoveries = iceRecoveryRef.current;
+    const network = (navigator as Navigator & { connection?: EventTarget }).connection;
+    const recoverNetwork = () => {
+      if (!active || endingRef.current) return;
+      iceRecoveries.forEach((recovery) => recovery.request());
+    };
+    window.addEventListener("online", recoverNetwork);
+    network?.addEventListener("change", recoverNetwork);
 
     async function connect() {
       try {
@@ -375,7 +385,9 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange, s
             }
             if (!message.peerId) return;
             const peer = createPeer(message.peerId, message.user);
-            if (message.type === "offer") {
+            if (message.type === "ice-restart") {
+              if (localPeerIdRef.current < message.peerId) iceRecoveryRef.current.get(message.peerId)?.request();
+            } else if (message.type === "offer") {
               await peer.setRemoteDescription(message.payload as RTCSessionDescriptionInit);
               const answer = await peer.createAnswer();
               await peer.setLocalDescription(answer);
@@ -425,10 +437,12 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange, s
       active = false;
       clearTimeout(reconnectTimer);
       clearInterval(retryTimer);
+      window.removeEventListener("online", recoverNetwork);
+      network?.removeEventListener("change", recoverNetwork);
       reliableRef.current?.clear();
       socket?.close(1000, "Page closed");
-      mediaFailureTimers.forEach((timer) => window.clearTimeout(timer));
-      mediaFailureTimers.clear();
+      iceRecoveries.forEach((recovery) => recovery.dispose());
+      iceRecoveries.clear();
       peerConnections.forEach((peer) => peer.close());
       peerConnections.clear();
       remoteStreams.clear();
@@ -758,8 +772,8 @@ export function Recorder({ roomId, isOwner, currentUser, onParticipantsChange, s
 
     sendSignal({ type: isOwner ? "end-room" : "leave" });
     setConnectionState("Ended");
-    mediaFailureTimersRef.current.forEach((timer) => window.clearTimeout(timer));
-    mediaFailureTimersRef.current.clear();
+    iceRecoveryRef.current.forEach((recovery) => recovery.dispose());
+    iceRecoveryRef.current.clear();
     peersRef.current.forEach((peer) => {
       peer.onconnectionstatechange = null;
       peer.close();

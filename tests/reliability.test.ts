@@ -88,6 +88,21 @@ test("signaling reports exhausted retries rather than claiming delivery", () => 
   assert.equal(failures, 1);
 });
 
+test("network recovery requests are retried and acknowledged", () => {
+  let now = 0;
+  const sent: ReliableMessage[] = [];
+  const sender = new ReliableSignaling((message) => sent.push(message), assert.fail, () => now, () => "restart-1");
+  sender.send({ type: "ice-restart", targetPeerId: "elected-peer" });
+  now = 1_000;
+  sender.tick();
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].messageId, "restart-1");
+  sender.receive({ type: "signal-ack", ackId: "restart-1" });
+  now = 20_000;
+  sender.tick();
+  assert.equal(sent.length, 2);
+});
+
 test("Coturn credentials have an expiry and the expected HMAC", () => {
   const previousHost = process.env.TURN_HOST;
   const previousSecret = process.env.TURN_SHARED_SECRET;

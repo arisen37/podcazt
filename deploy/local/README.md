@@ -112,6 +112,18 @@ docker compose up -d --wait
 docker compose ps
 ```
 
+`web` builds the shared `podcazt:local` image on `docker compose up`, using
+BuildKit's existing cache. Dependency installation is reused when the package
+manifests and install hook are unchanged; Prisma schema and application changes
+run in later layers. npm downloads and Next.js build data also use cache mounts.
+The first build after changing the Dockerfile installs dependencies once.
+
+To inspect cache hits, run `docker compose --progress plain build web` and look
+for `CACHED` on the dependency installation step. Keep the same Docker builder
+and avoid `--no-cache` or pruning its build cache when you want incremental builds.
+The favicon is registered by Next.js from `app/icon.png`; rebuilding includes it.
+If the browser still shows an old icon, clear its site cache or use a private window.
+
 The local image builds for your Mac's architecture. Use the Lightsail guide's
 `linux/amd64` build separately when preparing the AWS image. PostgreSQL and Redis
 have no published host ports. Coturn publishes 3478, 5349, and UDP 49160–49259 to

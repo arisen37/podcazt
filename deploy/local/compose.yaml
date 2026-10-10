@@ -13,9 +13,12 @@ x-app: &app
 services:
   web:
     <<: *app
+    # Check source changes on every up; unchanged Docker layers remain cached.
+    pull_policy: build
     build:
       context: ../..
       dockerfile: Dockerfile
+      target: runtime
       args:
         NODE_IMAGE: "${DOCKER_LIBRARY_PREFIX:-}node:22-bookworm-slim"
     healthcheck:
